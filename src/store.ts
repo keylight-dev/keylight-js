@@ -37,21 +37,41 @@ export class LocalStorageStore implements LicenseStore {
 /** Node/Bun/Deno filesystem adapter (one JSON file). */
 export class FsStore implements LicenseStore {
   private cache: Record<string, string> | null = null;
+  private loading: Promise<Record<string, string>> | null = null;
   constructor(private readonly filePath: string, private readonly fs: typeof import("node:fs/promises")) {}
-  private async load() {
+  private async load(): Promise<Record<string, string>> {
     if (this.cache) return this.cache;
-    try { this.cache = JSON.parse(await this.fs.readFile(this.filePath, "utf8")); }
-    catch { this.cache = {}; }
-    return this.cache!;
+    // Latch concurrent first-loads onto a single read so we don't fire two readFile calls.
+    if (!this.loading) {
+      this.loading = (async () => {
+        const parsed: Record<string, string> = {};
+        try {
+          const raw = JSON.parse(await this.fs.readFile(this.filePath, "utf8")) as unknown;
+          // Keep only string values — a corrupt/hand-edited file must not poison the
+          // store with non-string values (the LicenseStore contract is string|null).
+          if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+            for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+              if (typeof v === "string") parsed[k] = v;
+            }
+          }
+        } catch { /* missing or unparseable file -> empty store */ }
+        this.cache = parsed;
+        return parsed;
+      })();
+    }
+    return this.loading;
   }
   private async flush() { await this.fs.writeFile(this.filePath, JSON.stringify(this.cache ?? {})); }
   async get(k: string) { const c = await this.load(); return k in c ? c[k] : null; }
+  // set/remove await flush(), so a writeFile rejection (disk full, EACCES) propagates to the caller.
   async set(k: string, v: string) { const c = await this.load(); c[k] = v; await this.flush(); }
   async remove(k: string) { const c = await this.load(); delete c[k]; await this.flush(); }
 }
 
 /**
- * Auto-select a default store: localStorage (browser) -> fs (node/bun/deno) -> memory (edge).
+ * Auto-select a default store: localStorage (browser) -> fs (Node/Bun) -> memory
+ * (Deno, edge/Workers, or anywhere with no detectable persistence). Deno can still
+ * use FsStore by constructing it explicitly with a node:fs/promises-compatible fs.
  * IndexedDB is available as an opt-in adapter but is not the auto-default, so that the
  * client's in-memory cache can hydrate from a fast synchronous-backed store.
  */
