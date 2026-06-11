@@ -76,7 +76,7 @@ kl.on("Cancelled", () => {
 
 | Method / getter | Description |
 |---|---|
-| `state()` | Synchronous `LicenseState` — `"Active"`, `"Expired"`, `"Cancelled"`, `"Limited"`, `"FreeTier"`, `"Trial"`, `"TrialExpired"`, `"Unlicensed"`. |
+| `state()` | Synchronous `LicenseState` (a discriminated union on `.kind`) — `"Licensed"`, `"Limited"`, `"FreeTier"`, `"Trial"` (carries `daysLeft`), `"Expired"`, `"Invalid"`. |
 | `hasEntitlement(feature)` | `true` if the cached lease contains `feature` in its entitlements list. |
 | `cachedLease` | The trust-gated, unexpired cached lease (`Lease | null`). Enforces `maxOfflineDays`. |
 | `cachedLicenseKey` | The stored raw license key string, or `null`. |
@@ -103,7 +103,7 @@ kl.on("Cancelled", () => {
 
 | Method | Description |
 |---|---|
-| `on(event, fn)` | Subscribe to a `LicenseLifecycleEvent` (`"Activated"`, `"Renewed"`, `"Expired"`, `"Cancelled"`, `"Upgraded"`, …). Returns an unsubscribe function. |
+| `on(event, fn)` | Subscribe to a `LicenseLifecycleEvent` — one of `"Renewed"`, `"Cancelled"`, `"Expired"`, `"Restored"`. Returns an unsubscribe function. |
 | `subscribe(fn)` | Subscribe to every state change. Callback receives the new `LicenseState`. Returns unsubscribe. |
 
 ### Utilities
