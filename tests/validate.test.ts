@@ -32,3 +32,28 @@ test("deactivate clears all account keys", async () => {
   expect(await store.get(ACCOUNT.LICENSE_KEY)).toBeNull();
   expect(await store.get(ACCOUNT.INSTANCE_ID)).toBeNull();
 });
+
+test("deactivate clears local state even when the network POST fails, then rethrows", async () => {
+  const store = await seeded();
+  // Transport that always fails the POST -> post() throws NetworkError.
+  const failing: Transport = { async postJson() { return { kind: "terminal", error: "offline" }; }, async get() { return { kind: "terminal", error: "x" }; } };
+  const kl = new Keylight({ tenantId: "t", productId: "p", transport: failing, store });
+  await expect(kl.deactivate()).rejects.toThrow();
+  // Critical offline-deactivation contract: local state cleared regardless of network outcome.
+  expect(await store.get(ACCOUNT.LICENSE_KEY)).toBeNull();
+  expect(await store.get(ACCOUNT.INSTANCE_ID)).toBeNull();
+});
+
+test("validate ClientError (4xx) returns a failed result, not a throw", async () => {
+  const store = await seeded();
+  const kl = new Keylight({ tenantId: "t", productId: "p", transport: respT(`{"error":"forbidden"}`, 403), store });
+  const r = await kl.validate();
+  expect(r.valid).toBe(false);
+  expect(r.error).toBe("forbidden");
+});
+
+test("validate bad JSON body throws InvalidResponse", async () => {
+  const store = await seeded();
+  const kl = new Keylight({ tenantId: "t", productId: "p", transport: respT("not json", 200), store });
+  await expect(kl.validate()).rejects.toThrow(/invalid response/i);
+});
