@@ -1,5 +1,5 @@
 import { test, expect, afterEach } from "vitest";
-import { MemoryStore, FsStore, ACCOUNT } from "../src/store.js";
+import { MemoryStore, FsStore, LocalStorageStore, makeDefaultStore, ACCOUNT } from "../src/store.js";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -69,5 +69,21 @@ test("fs store drops non-string values from a corrupt file", async () => {
     expect(await s.get("alsoBad")).toBeNull();
   } finally {
     await fs.unlink(tmpFile).catch(() => {/* already gone */});
+  }
+});
+
+test("makeDefaultStore ignores a stub localStorage that lacks getItem/setItem (Node 25 footgun)", async () => {
+  const g = globalThis as Record<string, unknown>;
+  const prev = g.localStorage;
+  g.localStorage = {}; // mimic Node 25's stub: present but no getItem/setItem
+  const ns = `keylight-test-${Math.random().toString(36).slice(2)}`;
+  try {
+    const s = await makeDefaultStore(ns);
+    expect(s).not.toBeInstanceOf(LocalStorageStore); // would have crashed on first use
+    await s.set("k", "v");                            // must be functional (FsStore/Memory)
+    expect(await s.get("k")).toBe("v");
+  } finally {
+    if (prev === undefined) delete g.localStorage; else g.localStorage = prev;
+    await fs.unlink(path.join(os.homedir(), `.${ns}.json`)).catch(() => {});
   }
 });

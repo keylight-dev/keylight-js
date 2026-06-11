@@ -75,10 +75,18 @@ export class FsStore implements LicenseStore {
  * IndexedDB is available as an opt-in adapter but is not the auto-default, so that the
  * client's in-memory cache can hydrate from a fast synchronous-backed store.
  */
-export async function makeDefaultStore(namespace = "keylight"): Promise<LicenseStore> {
+/** True only for a *functional* Web Storage. Node 25+ defines a stub `localStorage = {}`
+ *  without getItem/setItem, which must NOT be selected (it would crash on first use). */
+function hasUsableLocalStorage(): boolean {
   try {
-    if (typeof localStorage !== "undefined") return new LocalStorageStore(localStorage, `${namespace}_`);
-  } catch { /* localStorage may throw in sandboxed iframes */ }
+    return typeof localStorage !== "undefined"
+      && typeof localStorage.getItem === "function"
+      && typeof localStorage.setItem === "function";
+  } catch { return false; } // accessing localStorage can throw in sandboxed iframes
+}
+
+export async function makeDefaultStore(namespace = "keylight"): Promise<LicenseStore> {
+  if (hasUsableLocalStorage()) return new LocalStorageStore(localStorage, `${namespace}_`);
   try {
     if (typeof process !== "undefined" && process.versions?.node) {
       const fs = await import("node:fs/promises");
