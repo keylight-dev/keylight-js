@@ -18,7 +18,7 @@ async function main() {
     keyPrefix: "NOTES",
     freeTierEnabled: true,
     trustedKeys: ks?.keys ?? {},
-    store: new MemoryStore(), // explicit store avoids Node.js stub-localStorage issues
+    store: new MemoryStore(), // ephemeral on purpose: keeps each demo run stateless (omit to use the default persistent store)
   });
   await kl.load();
 
