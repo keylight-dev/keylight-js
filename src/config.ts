@@ -39,7 +39,7 @@ export function normalizeConfig(o: KeylightOptions): KeylightConfig {
     baseUrl: o.baseUrl ?? "https://api.keylight.dev",
     trustedKeys: o.trustedKeys ?? {},
     maxOfflineDays: o.maxOfflineDays,
-    trialDurationDays: o.trialDurationDays ?? 0,
+    trialDurationDays: o.trialDurationDays ?? 14, // Rust builder default; harmless until startTrial() is called
     freeTierEnabled: o.freeTierEnabled ?? false,
     appVersion: o.appVersion,
     keyPrefix: o.keyPrefix,
@@ -47,10 +47,11 @@ export function normalizeConfig(o: KeylightOptions): KeylightConfig {
   };
 }
 
-/** Mirrors Rust validate_key_format: trims, enforces optional prefix, alphanumeric+hyphen. */
+/** Mirrors Rust validate_key_format: trims, enforces optional (case-insensitive) prefix, alphanumeric+hyphen. */
 export function validateKeyFormat(key: string, keyPrefix: string | undefined): boolean {
   const k = key.trim();
   if (k.length === 0) return false;
-  if (keyPrefix && !k.startsWith(keyPrefix)) return false;
+  // Rust compares prefixes case-insensitively (to_uppercase on both sides).
+  if (keyPrefix && !k.toUpperCase().startsWith(keyPrefix.toUpperCase())) return false;
   return /^[A-Za-z0-9-]+$/.test(k);
 }
