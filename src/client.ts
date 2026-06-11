@@ -119,8 +119,6 @@ export class Keylight {
   protected verify(lease: Lease): VerifyResult {
     return verifyLease(lease, this.cfg.trustedKeys, nowSecs(), SKEW_SECONDS);
   }
-  protected config(): KeylightConfig { return this.cfg; }
-  protected bodyTelemetry(map: Record<string, unknown>): string { return this.bodyWithTelemetry(map); }
 
   async activate(key: string): Promise<ActivationResult> {
     await this.ensureHydrated();
