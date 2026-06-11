@@ -7,7 +7,8 @@ import { randomUuid } from "./device.js";
 import { applyTelemetry } from "./telemetry.js";
 import { decide, backoffMs, clampSleepMs, jitterMs, MAX_ATTEMPTS } from "./retry.js";
 import { ClientError, ServerError, RateLimited, TimeoutError, NetworkError, InvalidResponse, LeaseVerificationFailed, NoStoredLicense } from "./errors.js";
-import { lifecycleEvent, resolveState, type LicenseState, type LicenseLifecycleEvent, type TrialStatus } from "./state.js";
+import { lifecycleEvent, resolveState, type LicenseState, type LicenseLifecycleEvent, type TrialStatus, type KeylessState } from "./state.js";
+import { clockManipulated } from "./clock.js";
 
 export interface ActivationResult {
   activated: boolean;
@@ -280,8 +281,59 @@ export class Keylight {
     return left > 0 ? { kind: "active", daysLeft: left } : { kind: "expired" };
   }
 
-  // TEMP stub — replaced by the real implementation in Task 17.
-  protected fire(_ev: LicenseLifecycleEvent) { /* no-op until Task 17 */ }
+  private listeners = new Map<LicenseLifecycleEvent, Set<() => void>>();
+  private subscribers = new Set<(s: LicenseState) => void>();
+
+  on(event: LicenseLifecycleEvent, fn: () => void): () => void {
+    if (!this.listeners.has(event)) this.listeners.set(event, new Set());
+    this.listeners.get(event)!.add(fn);
+    return () => this.listeners.get(event)!.delete(fn);
+  }
+  subscribe(fn: (s: LicenseState) => void): () => void {
+    this.subscribers.add(fn);
+    return () => this.subscribers.delete(fn);
+  }
+  protected fire(ev: LicenseLifecycleEvent) {
+    this.listeners.get(ev)?.forEach((fn) => { try { fn(); } catch { /* listener errors are non-fatal */ } });
+    const s = this.state();
+    this.subscribers.forEach((fn) => { try { fn(s); } catch { /* non-fatal */ } });
+  }
+
+  async startTrial(): Promise<void> {
+    await this.ensureHydrated();
+    if (this.getStr(ACCOUNT.TRIAL_START) === null) await this.setStr(ACCOUNT.TRIAL_START, String(nowSecs()));
+  }
+
+  isClockManipulated(): boolean {
+    const last = this.getNum(ACCOUNT.LAST_SEEN);
+    if (last === null) return false;
+    const manipulated = clockManipulated(last, nowSecs());
+    if (!manipulated) void this.touchLastSeen();
+    return manipulated;
+  }
+
+  async freeTierInstanceId(): Promise<string> {
+    await this.ensureHydrated();
+    const existing = this.getStr(ACCOUNT.FREE_TIER_INSTANCE_ID);
+    if (existing) return existing;
+    const id = this.cfg.deviceId ?? randomUuid();
+    await this.setStr(ACCOUNT.FREE_TIER_INSTANCE_ID, id);
+    return id;
+  }
+
+  async reportKeylessState(state: KeylessState): Promise<void> {
+    await this.ensureHydrated();
+    const lastState = this.getStr(ACCOUNT.KEYLESS_LAST_STATE);
+    const lastPing = this.getNum(ACCOUNT.LAST_KEYLESS_PING_AT);
+    const changed = lastState !== state;
+    const within = lastPing !== null && nowSecs() - lastPing < 86400;
+    if (!changed && within) return;
+    const instance = await this.freeTierInstanceId();
+    const body = this.bodyWithTelemetry({ instance_id: instance, state });
+    const out = await this.post("keyless", body).catch(() => null);
+    // post() returns only on 200; on success record state + ping (parity with Rust).
+    if (out) { await this.setStr(ACCOUNT.KEYLESS_LAST_STATE, state); await this.setStr(ACCOUNT.LAST_KEYLESS_PING_AT, String(nowSecs())); }
+  }
 
   protected verifyOrReject(lease: Lease) {
     if (!isTrusted(this.verify(lease))) throw new LeaseVerificationFailed();
