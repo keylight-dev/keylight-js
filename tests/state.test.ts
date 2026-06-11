@@ -57,3 +57,12 @@ test("Licensed -> Licensed without later expiry emits null", () => {
 test("Trial tick (no boundary) emits null", () => {
   expect(lifecycleEvent({ kind: "Trial", daysLeft: 3 }, { kind: "Trial", daysLeft: 2 }, false)).toBeNull();
 });
+
+// Pin the surprising-but-correct parity cases: only Expired/Limited/Invalid -> Licensed
+// emit "Restored". Trial->Licensed and FreeTier->Licensed deliberately emit nothing.
+test("Trial -> Licensed emits no event (not Restored) — Rust parity", () => {
+  expect(lifecycleEvent({ kind: "Trial", daysLeft: 3 }, { kind: "Licensed" }, false)).toBeNull();
+});
+test("FreeTier -> Licensed emits no event (not Restored) — Rust parity", () => {
+  expect(lifecycleEvent({ kind: "FreeTier" }, { kind: "Licensed" }, false)).toBeNull();
+});
