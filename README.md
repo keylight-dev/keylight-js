@@ -113,6 +113,19 @@ kl.on("Cancelled", () => {
 | `upgradeUrl` | Getter returning the hosted upgrade portal URL (requires a stored license key). |
 | `isClockManipulated()` | Heuristic — `true` if the system clock moved backward since `last_seen`. |
 
+### Swift-parity convenience aliases
+
+Thin wrappers matching the Swift SDK's method names, for teams porting between platforms:
+
+| Alias | Equivalent to |
+|---|---|
+| `isEntitled` (getter) | `true` when `state()` is `Licensed` or an active `Trial`. |
+| `productFreeTierEnabled()` | The configured `freeTierEnabled` flag. |
+| `isValidKeyFormat(key)` | `validateKeyFormat(key, keyPrefix)` as an instance method. |
+| `refresh(force?)` | `force` (default) → `validate()`; otherwise `refreshIfNeeded()`. |
+| `freeTierInstanceIdIfPresent()` | The persisted free-tier id, or `null` — without creating one. |
+| `reportFreeTier()` | `reportKeylessState("free_tier")`. |
+
 ## Standalone offline verification
 
 Verify a lease without a `Keylight` client instance — useful in server-side middleware or CI tooling:

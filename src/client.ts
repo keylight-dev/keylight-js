@@ -337,6 +337,37 @@ export class Keylight {
     if (out) { await this.setStr(ACCOUNT.KEYLESS_LAST_STATE, state); await this.setStr(ACCOUNT.LAST_KEYLESS_PING_AT, String(nowSecs())); }
   }
 
+  // --- Swift-parity convenience aliases (thin wrappers over the methods above) ---
+
+  /** `true` when actively entitled: Licensed, or a Trial with days remaining. Mirrors Swift `isEntitled`. */
+  get isEntitled(): boolean {
+    const s = this.state();
+    return s.kind === "Licensed" || (s.kind === "Trial" && s.daysLeft > 0);
+  }
+
+  /** Whether the product has the free tier enabled. Mirrors Swift `productFreeTierEnabled()`. */
+  productFreeTierEnabled(): boolean { return this.cfg.freeTierEnabled; }
+
+  /** Instance-method form of key-format validation (uses the configured keyPrefix). Mirrors Swift `isValidKeyFormat`. */
+  isValidKeyFormat(key: string): boolean { return validateKeyFormat(key, this.cfg.keyPrefix); }
+
+  /** Force a validation (default) or fall back to the debounced path. Mirrors Swift `refresh(force:)`. */
+  async refresh(force = true): Promise<ValidationResult | null> {
+    if (!force) return this.refreshIfNeeded();
+    await this.ensureHydrated();
+    if (!this.hasStoredLicense()) return null;
+    return this.validate();
+  }
+
+  /** The persisted free-tier/keyless instance id WITHOUT creating one. Mirrors Swift `freeTierInstanceIdIfPresent()`. */
+  async freeTierInstanceIdIfPresent(): Promise<string | null> {
+    await this.ensureHydrated();
+    return this.getStr(ACCOUNT.FREE_TIER_INSTANCE_ID);
+  }
+
+  /** Report the anonymous free-tier beacon. Mirrors Swift `reportFreeTier()`. */
+  async reportFreeTier(): Promise<void> { await this.reportKeylessState("free_tier"); }
+
   protected verifyOrReject(lease: Lease) {
     if (!isTrusted(this.verify(lease))) throw new LeaseVerificationFailed();
   }
