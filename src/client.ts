@@ -302,13 +302,17 @@ export class Keylight {
   async startTrial(): Promise<void> {
     await this.ensureHydrated();
     if (this.getStr(ACCOUNT.TRIAL_START) === null) await this.setStr(ACCOUNT.TRIAL_START, String(nowSecs()));
+    // Parity with Rust start_trial: seed a stable free-tier instance id so a later
+    // activate forwards it for free-tier -> paid conversion linking.
+    await this.freeTierInstanceId();
   }
 
   isClockManipulated(): boolean {
     const last = this.getNum(ACCOUNT.LAST_SEEN);
     if (last === null) return false;
     const manipulated = clockManipulated(last, nowSecs());
-    if (!manipulated) void this.touchLastSeen();
+    // Best-effort touch; swallow rejection so an unawaited store error can't crash the process.
+    if (!manipulated) this.touchLastSeen().catch(() => {});
     return manipulated;
   }
 

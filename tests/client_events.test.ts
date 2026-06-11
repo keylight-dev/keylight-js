@@ -30,10 +30,28 @@ test("reportKeylessState debounces within 24h for the same state", async () => {
   expect(calls).toBe(1);
 });
 
-test("subscribe / on receive lifecycle events", async () => {
+test("subscribe / on receive lifecycle events; unsubscribe stops them", async () => {
   const kl = new Keylight({ tenantId: "t", productId: "p", transport: ok, store: new MemoryStore() });
   const seen: string[] = [];
-  kl.on("Restored", () => seen.push("Restored"));
+  const off = kl.on("Restored", () => seen.push("Restored"));
   (kl as unknown as { fire: (e: string) => void }).fire("Restored");
-  expect(seen).toEqual(["Restored"]);
+  off();
+  (kl as unknown as { fire: (e: string) => void }).fire("Restored");
+  expect(seen).toEqual(["Restored"]); // only the first fire, after unsubscribe nothing
+});
+
+test("subscribe receives the current state on each fire", async () => {
+  const kl = new Keylight({ tenantId: "t", productId: "p", freeTierEnabled: true, transport: ok, store: new MemoryStore() });
+  await kl.load();
+  const states: string[] = [];
+  kl.subscribe((s) => states.push(s.kind));
+  (kl as unknown as { fire: (e: string) => void }).fire("Restored");
+  expect(states).toEqual(["FreeTier"]); // no license + free tier -> FreeTier
+});
+
+test("startTrial seeds a free-tier instance id (Rust parity for conversion linking)", async () => {
+  const store = new MemoryStore();
+  const kl = new Keylight({ tenantId: "t", productId: "p", transport: ok, store });
+  await kl.startTrial();
+  expect(await store.get(ACCOUNT.FREE_TIER_INSTANCE_ID)).toBeTruthy();
 });
