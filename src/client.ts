@@ -6,7 +6,8 @@ import { type Lease } from "./lease.js";
 import { randomUuid } from "./device.js";
 import { applyTelemetry } from "./telemetry.js";
 import { decide, backoffMs, clampSleepMs, jitterMs, MAX_ATTEMPTS } from "./retry.js";
-import { ClientError, ServerError, RateLimited, TimeoutError, NetworkError, InvalidResponse, LeaseVerificationFailed } from "./errors.js";
+import { ClientError, ServerError, RateLimited, TimeoutError, NetworkError, InvalidResponse, LeaseVerificationFailed, NoStoredLicense } from "./errors.js";
+import { lifecycleEvent, type LicenseState, type LicenseLifecycleEvent } from "./state.js";
 
 export interface ActivationResult {
   activated: boolean;
@@ -23,6 +24,9 @@ interface ActivateResp {
   lease?: Lease | null;
   error?: string | null;
 }
+
+export interface ValidationResult { valid: boolean; lease: Lease | null; licenseExpiresAt: number | null; error: string | null; }
+interface ValidateResp { valid: boolean; license_expires_at?: number | null; lease?: Lease | null; error?: string | null; }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const nowSecs = () => Math.floor(Date.now() / 1000);
@@ -146,6 +150,65 @@ export class Keylight {
     await this.touchValidatedOnline();
     return { activated: true, instanceId: resp.instance_id ?? null, lease: resp.lease ?? null, licenseExpiresAt: resp.license_expires_at ?? null, error: null };
   }
+
+  async validate(): Promise<ValidationResult> {
+    await this.ensureHydrated();
+    const key = this.getStr(ACCOUNT.LICENSE_KEY);
+    const instance = this.getStr(ACCOUNT.INSTANCE_ID);
+    if (!key || !instance) throw new NoStoredLicense();
+    const prevState = this.state();
+    const prevExpiry = this.getNum(ACCOUNT.LICENSE_EXPIRES_AT);
+
+    let res: { status: number; body: string };
+    try { res = await this.post("validate", this.bodyWithTelemetry({ license_key: key, instance_id: instance }), [422]); }
+    catch (e) { if (e instanceof ClientError) return { valid: false, lease: null, licenseExpiresAt: null, error: e.message || `Validation failed (HTTP ${e.status})` }; throw e; }
+
+    let resp: ValidateResp;
+    try { resp = JSON.parse(res.body); } catch { throw new InvalidResponse(); }
+    if (resp.lease) this.verifyOrReject(resp.lease);
+
+    if (!resp.valid) {
+      if (resp.lease) { await this.setStr(ACCOUNT.LEASE, JSON.stringify(resp.lease)); await this.saveExpiry(resp.license_expires_at ?? null); }
+      this.emitLifecycle(prevState, prevExpiry);
+      return { valid: false, lease: resp.lease ?? null, licenseExpiresAt: resp.license_expires_at ?? null, error: resp.error ?? null };
+    }
+    if (resp.lease) await this.setStr(ACCOUNT.LEASE, JSON.stringify(resp.lease));
+    await this.saveExpiry(resp.license_expires_at ?? null);
+    await this.touchLastSeen();
+    await this.touchValidatedOnline();
+    this.emitLifecycle(prevState, prevExpiry);
+    return { valid: true, lease: resp.lease ?? null, licenseExpiresAt: resp.license_expires_at ?? null, error: null };
+  }
+
+  async deactivate(): Promise<void> {
+    await this.ensureHydrated();
+    const key = this.getStr(ACCOUNT.LICENSE_KEY);
+    const instance = this.getStr(ACCOUNT.INSTANCE_ID);
+    let netErr: unknown = null;
+    if (key && instance) {
+      // deactivate carries NO telemetry (parity with Rust).
+      try { await this.post("deactivate", JSON.stringify({ license_key: key, instance_id: instance })); }
+      catch (e) { netErr = e; }
+    }
+    for (const k of [ACCOUNT.LICENSE_KEY, ACCOUNT.INSTANCE_ID, ACCOUNT.LEASE, ACCOUNT.LICENSE_EXPIRES_AT, ACCOUNT.LAST_VALIDATED_ONLINE, ACCOUNT.LAST_SEEN]) {
+      await this.del(k);
+    }
+    if (netErr) throw netErr;
+  }
+
+  private emitLifecycle(prevState: LicenseState, prevExpiry: number | null) {
+    const next = this.state();
+    const curExpiry = this.getNum(ACCOUNT.LICENSE_EXPIRES_AT);
+    // None < Some ordering: later-or-newly-present expiry.
+    const expiryMovedLater = (curExpiry ?? -Infinity) > (prevExpiry ?? -Infinity);
+    const ev = lifecycleEvent(prevState, next, expiryMovedLater);
+    if (ev) this.fire(ev);
+  }
+
+  // TEMP stub — replaced by the real implementation in Task 16.
+  state(): LicenseState { return { kind: "Invalid" }; }
+  // TEMP stub — replaced by the real implementation in Task 17.
+  protected fire(_ev: LicenseLifecycleEvent) { /* no-op until Task 17 */ }
 
   protected verifyOrReject(lease: Lease) {
     if (!isTrusted(this.verify(lease))) throw new LeaseVerificationFailed();
