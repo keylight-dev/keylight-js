@@ -6,6 +6,7 @@
     "lib": ["ES2022", "DOM"],
     "strict": true,
     "declaration": true,
+    "stripInternal": true,
     "skipLibCheck": true,
     "types": ["node"],
     "resolveJsonModule": true
