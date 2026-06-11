@@ -3,6 +3,7 @@ import { type LicenseStore, MemoryStore, ACCOUNT, makeDefaultStore } from "./sto
 import { type Transport, type Header, FetchTransport } from "./transport.js";
 import { verifyLease, isTrusted, SKEW_SECONDS, type VerifyResult } from "./verifier.js";
 import { type Lease } from "./lease.js";
+import { randomUuid } from "./device.js";
 import { applyTelemetry } from "./telemetry.js";
 import { decide, backoffMs, clampSleepMs, jitterMs, MAX_ATTEMPTS } from "./retry.js";
 import { ClientError, ServerError, RateLimited, TimeoutError, NetworkError } from "./errors.js";
@@ -84,8 +85,12 @@ export class Keylight {
     }
   }
 
-  /** Test-only passthrough to exercise the plumbing (URL/headers/telemetry). */
-  async postForTest(path: string, map: Record<string, unknown>, decodable4xx: number[] = []) {
+  /**
+   * Test-only passthrough to exercise the plumbing (URL/headers/telemetry) before the
+   * real licensing methods exist. Not part of the public API.
+   * @internal
+   */
+  async _postForTest(path: string, map: Record<string, unknown>, decodable4xx: number[] = []) {
     return this.post(path, this.bodyWithTelemetry(map), decodable4xx);
   }
 
@@ -97,7 +102,8 @@ export class Keylight {
   protected bodyTelemetry(map: Record<string, unknown>): string { return this.bodyWithTelemetry(map); }
 }
 
+// Short opaque correlation id for the X-Keylight-Request-Id header.
+// Reuses the SDK's UUID generator (incl. its getRandomValues fallback) — DRY.
 function randomId(): string {
-  const uuid = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
-  return uuid.slice(0, 8);
+  return randomUuid().slice(0, 8);
 }

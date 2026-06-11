@@ -15,7 +15,7 @@ function recordingTransport(outcome: TransportOutcome) {
 test("apiUrl + headers + telemetry are built correctly", async () => {
   const { t, calls } = recordingTransport({ kind: "response", status: 200, body: "{}" });
   const kl = new Keylight({ tenantId: "acme", productId: "notes", sdkKey: "sk-1", appVersion: "9.9.9", transport: t, store: new MemoryStore() });
-  await kl.postForTest("validate", { license_key: "K", instance_id: "i" }, [422]);
+  await kl._postForTest("validate", { license_key: "K", instance_id: "i" }, [422]);
 
   expect(calls[0].url).toBe("https://api.keylight.dev/acme/notes/validate");
   const hk = Object.fromEntries(calls[0].headers);
