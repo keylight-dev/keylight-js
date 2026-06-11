@@ -30,3 +30,11 @@ test("fetchKeyset parses a 200 keyset", async () => {
   const ks = await fetchKeyset(t, "https://api", "tenant");
   expect(ks!.primaryKid).toBe("k1");
 });
+
+test("fetchKeyset returns null on non-200", async () => {
+  const t: Transport = {
+    async get() { return { kind: "response", status: 404, body: "" }; },
+    async postJson() { return { kind: "terminal", error: "n/a" }; },
+  };
+  expect(await fetchKeyset(t, "https://api", "tenant")).toBeNull();
+});

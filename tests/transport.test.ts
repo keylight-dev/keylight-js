@@ -14,3 +14,37 @@ test("network throw maps to transient", async () => {
   const out = await t.postJson("https://x/api", [], "{}");
   expect(out.kind).toBe("transient");
 });
+
+test("AbortError maps to timeout", async () => {
+  const fakeFetch = vi.fn(async () => { throw Object.assign(new Error("aborted"), { name: "AbortError" }); });
+  const t = new FetchTransport(fakeFetch as unknown as typeof fetch);
+  expect((await t.postJson("https://x/api", [], "{}")).kind).toBe("timeout");
+});
+
+test("TypeError maps to terminal", async () => {
+  const fakeFetch = vi.fn(async () => { throw new TypeError("Invalid URL"); });
+  const t = new FetchTransport(fakeFetch as unknown as typeof fetch);
+  expect((await t.postJson("https://x/api", [], "{}")).kind).toBe("terminal");
+});
+
+test("get() issues a GET and maps 200", async () => {
+  const fakeFetch = vi.fn(async () => new Response("ok", { status: 200 }));
+  const t = new FetchTransport(fakeFetch as unknown as typeof fetch);
+  const out = await t.get("https://x/keys", []);
+  expect(out).toEqual({ kind: "response", status: 200, body: "ok", retryAfter: undefined });
+  expect((fakeFetch.mock.calls[0] as unknown[])[1]).toMatchObject({ method: "GET" });
+});
+
+test("Retry-After: 0 is honored (not dropped)", async () => {
+  const fakeFetch = vi.fn(async () => new Response("", { status: 429, headers: { "retry-after": "0" } }));
+  const t = new FetchTransport(fakeFetch as unknown as typeof fetch);
+  const out = await t.postJson("https://x/api", [], "{}");
+  expect(out).toMatchObject({ kind: "response", status: 429, retryAfter: 0 });
+});
+
+test("Retry-After HTTP-date form -> undefined", async () => {
+  const fakeFetch = vi.fn(async () => new Response("", { status: 429, headers: { "retry-after": "Wed, 12 Jun 2026 00:00:00 GMT" } }));
+  const t = new FetchTransport(fakeFetch as unknown as typeof fetch);
+  const out = await t.postJson("https://x/api", [], "{}");
+  expect((out as { retryAfter?: number }).retryAfter).toBeUndefined();
+});
