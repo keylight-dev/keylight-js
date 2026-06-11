@@ -1,4 +1,4 @@
-import { type KeylightOptions, type KeylightConfig, normalizeConfig } from "./config.js";
+import { type KeylightOptions, type KeylightConfig, normalizeConfig, validateKeyFormat } from "./config.js";
 import { type LicenseStore, MemoryStore, ACCOUNT, makeDefaultStore } from "./store.js";
 import { type Transport, type Header, FetchTransport } from "./transport.js";
 import { verifyLease, isTrusted, SKEW_SECONDS, type VerifyResult } from "./verifier.js";
@@ -6,7 +6,23 @@ import { type Lease } from "./lease.js";
 import { randomUuid } from "./device.js";
 import { applyTelemetry } from "./telemetry.js";
 import { decide, backoffMs, clampSleepMs, jitterMs, MAX_ATTEMPTS } from "./retry.js";
-import { ClientError, ServerError, RateLimited, TimeoutError, NetworkError } from "./errors.js";
+import { ClientError, ServerError, RateLimited, TimeoutError, NetworkError, InvalidResponse, LeaseVerificationFailed } from "./errors.js";
+
+export interface ActivationResult {
+  activated: boolean;
+  instanceId: string | null;
+  lease: Lease | null;
+  licenseExpiresAt: number | null;
+  error: string | null;
+}
+
+interface ActivateResp {
+  activated: boolean;
+  instance_id?: string | null;
+  license_expires_at?: number | null;
+  lease?: Lease | null;
+  error?: string | null;
+}
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const nowSecs = () => Math.floor(Date.now() / 1000);
@@ -100,10 +116,56 @@ export class Keylight {
   }
   protected config(): KeylightConfig { return this.cfg; }
   protected bodyTelemetry(map: Record<string, unknown>): string { return this.bodyWithTelemetry(map); }
+
+  async activate(key: string): Promise<ActivationResult> {
+    await this.ensureHydrated();
+    const fail = (error: string): ActivationResult => ({ activated: false, instanceId: null, lease: null, licenseExpiresAt: null, error });
+    if (!validateKeyFormat(key, this.cfg.keyPrefix)) return fail("Invalid license key format");
+
+    const map: Record<string, unknown> = { license_key: key, instance_name: machineName() };
+    const ft = this.getStr(ACCOUNT.FREE_TIER_INSTANCE_ID);
+    if (ft) map.free_tier_instance_id = ft;
+
+    let res: { status: number; body: string };
+    try {
+      res = await this.post("activate", this.bodyWithTelemetry(map));
+    } catch (e) {
+      if (e instanceof ClientError) return fail(e.message || `Activation failed (HTTP ${e.status})`);
+      throw e;
+    }
+    let resp: ActivateResp;
+    try { resp = JSON.parse(res.body); } catch { throw new InvalidResponse(); }
+    if (!resp.activated) return fail(resp.error ?? "Activation failed");
+
+    if (resp.lease) this.verifyOrReject(resp.lease);
+    await this.setStr(ACCOUNT.LICENSE_KEY, key);
+    if (resp.instance_id) await this.setStr(ACCOUNT.INSTANCE_ID, resp.instance_id);
+    if (resp.lease) await this.setStr(ACCOUNT.LEASE, JSON.stringify(resp.lease));
+    await this.saveExpiry(resp.license_expires_at ?? null);
+    await this.touchLastSeen();
+    await this.touchValidatedOnline();
+    return { activated: true, instanceId: resp.instance_id ?? null, lease: resp.lease ?? null, licenseExpiresAt: resp.license_expires_at ?? null, error: null };
+  }
+
+  protected verifyOrReject(lease: Lease) {
+    if (!isTrusted(this.verify(lease))) throw new LeaseVerificationFailed();
+  }
+  protected async saveExpiry(exp: number | null) {
+    if (exp === null) await this.del(ACCOUNT.LICENSE_EXPIRES_AT);
+    else await this.setStr(ACCOUNT.LICENSE_EXPIRES_AT, String(exp));
+  }
+  protected async touchLastSeen() { await this.setStr(ACCOUNT.LAST_SEEN, String(nowSecs())); }
+  protected async touchValidatedOnline() { await this.setStr(ACCOUNT.LAST_VALIDATED_ONLINE, String(nowSecs())); }
 }
 
 // Short opaque correlation id for the X-Keylight-Request-Id header.
 // Reuses the SDK's UUID generator (incl. its getRandomValues fallback) — DRY.
 function randomId(): string {
   return randomUuid().slice(0, 8);
+}
+
+function machineName(): string {
+  if (typeof navigator !== "undefined" && navigator.userAgent) return navigator.userAgent.slice(0, 64);
+  if (typeof process !== "undefined") return `${process.platform}-${process.arch}`;
+  return "unknown-device";
 }
