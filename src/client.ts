@@ -205,24 +205,42 @@ export class Keylight {
     if (ev) this.fire(ev);
   }
 
-  get cachedLease(): Lease | null {
+  /** Raw parsed lease from the cache — NO trust/expiry/offline gating. Used by state(),
+   *  which needs lease.status even for untrusted/expired leases to resolve Limited/Expired. */
+  private rawLease(): Lease | null {
     const s = this.getStr(ACCOUNT.LEASE);
     if (!s) return null;
     try { return JSON.parse(s) as Lease; } catch { return null; }
+  }
+
+  /**
+   * The usable cached lease, or null. Gated exactly like Rust `cached_lease()`:
+   * enforces `maxOfflineDays` (since last online validation), then requires a
+   * signature-trusted, unexpired lease whose status is not "expired".
+   */
+  get cachedLease(): Lease | null {
+    if (this.cfg.maxOfflineDays != null) {
+      const last = this.getNum(ACCOUNT.LAST_VALIDATED_ONLINE);
+      if (last === null) return null;
+      if (nowSecs() - last > this.cfg.maxOfflineDays * 86400) return null;
+    }
+    const lease = this.rawLease();
+    if (!lease) return null;
+    const r = this.verify(lease);
+    return isTrusted(r) && !r.expired && lease.status !== "expired" ? lease : null;
   }
   hasStoredLicense(): boolean { return this.getStr(ACCOUNT.LICENSE_KEY) !== null; }
   get cachedLicenseKey(): string | null { return this.getStr(ACCOUNT.LICENSE_KEY); }
   get cachedLicenseExpiresAt(): number | null { return this.getNum(ACCOUNT.LICENSE_EXPIRES_AT); }
 
+  /** Entitlement check via the gated cachedLease (parity with Rust has_entitlement). */
   hasEntitlement(feature: string): boolean {
     const lease = this.cachedLease;
-    if (!lease) return false;
-    const r = this.verify(lease);
-    return isTrusted(r) && !r.expired && lease.entitlements.includes(feature);
+    return lease ? lease.entitlements.includes(feature) : false;
   }
 
   state(): LicenseState {
-    const lease = this.cachedLease;
+    const lease = this.rawLease();
     let status: string | null = null, current = false;
     if (lease) { const r = this.verify(lease); status = isTrusted(r) ? lease.status : null; current = !r.expired; }
     return resolveState(status, current, this.hasStoredLicense(), this.checkTrial(), this.cfg.freeTierEnabled);
