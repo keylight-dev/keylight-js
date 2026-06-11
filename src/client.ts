@@ -7,7 +7,7 @@ import { randomUuid } from "./device.js";
 import { applyTelemetry } from "./telemetry.js";
 import { decide, backoffMs, clampSleepMs, jitterMs, MAX_ATTEMPTS } from "./retry.js";
 import { ClientError, ServerError, RateLimited, TimeoutError, NetworkError, InvalidResponse, LeaseVerificationFailed, NoStoredLicense } from "./errors.js";
-import { lifecycleEvent, type LicenseState, type LicenseLifecycleEvent } from "./state.js";
+import { lifecycleEvent, resolveState, type LicenseState, type LicenseLifecycleEvent, type TrialStatus } from "./state.js";
 
 export interface ActivationResult {
   activated: boolean;
@@ -205,8 +205,63 @@ export class Keylight {
     if (ev) this.fire(ev);
   }
 
-  // TEMP stub — replaced by the real implementation in Task 16.
-  state(): LicenseState { return { kind: "Invalid" }; }
+  get cachedLease(): Lease | null {
+    const s = this.getStr(ACCOUNT.LEASE);
+    if (!s) return null;
+    try { return JSON.parse(s) as Lease; } catch { return null; }
+  }
+  hasStoredLicense(): boolean { return this.getStr(ACCOUNT.LICENSE_KEY) !== null; }
+  get cachedLicenseKey(): string | null { return this.getStr(ACCOUNT.LICENSE_KEY); }
+  get cachedLicenseExpiresAt(): number | null { return this.getNum(ACCOUNT.LICENSE_EXPIRES_AT); }
+
+  hasEntitlement(feature: string): boolean {
+    const lease = this.cachedLease;
+    if (!lease) return false;
+    const r = this.verify(lease);
+    return isTrusted(r) && !r.expired && lease.entitlements.includes(feature);
+  }
+
+  state(): LicenseState {
+    const lease = this.cachedLease;
+    let status: string | null = null, current = false;
+    if (lease) { const r = this.verify(lease); status = isTrusted(r) ? lease.status : null; current = !r.expired; }
+    return resolveState(status, current, this.hasStoredLicense(), this.checkTrial(), this.cfg.freeTierEnabled);
+  }
+  getState(): LicenseState { return this.state(); }
+
+  async refreshIfNeeded(): Promise<ValidationResult | null> {
+    await this.ensureHydrated();
+    if (!this.hasStoredLicense()) return null;
+    const last = this.getNum(ACCOUNT.LAST_VALIDATED_ONLINE);
+    if (last !== null) {
+      const now = nowSecs();
+      if (now - last < 300) return null; // debounce 5m
+      const exp = this.getNum(ACCOUNT.LICENSE_EXPIRES_AT);
+      const nearExpiry = exp !== null && exp - now < 86400; // 24h
+      if (now - last < 21600 && !nearExpiry) return null; // stale 6h
+    }
+    return this.validate();
+  }
+
+  async checkOnLaunch(): Promise<void> {
+    await this.ensureHydrated();
+    if (this.hasStoredLicense()) await this.refreshIfNeeded();
+  }
+
+  get upgradeUrl(): string | null {
+    const key = this.cachedLicenseKey;
+    if (!key) return null;
+    return `https://portal.keylight.dev/p/${this.cfg.tenantId}/upgrade/${this.cfg.productId}?key=${encodeURIComponent(key)}`;
+  }
+
+  /** Trial status from the persisted trial-start timestamp (parity with Rust check_trial). */
+  checkTrial(): TrialStatus {
+    const s = this.getNum(ACCOUNT.TRIAL_START);
+    if (s === null) return { kind: "not_started" };
+    const left = this.cfg.trialDurationDays - Math.floor((nowSecs() - s) / 86400);
+    return left > 0 ? { kind: "active", daysLeft: left } : { kind: "expired" };
+  }
+
   // TEMP stub — replaced by the real implementation in Task 17.
   protected fire(_ev: LicenseLifecycleEvent) { /* no-op until Task 17 */ }
 
