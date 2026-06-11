@@ -2,7 +2,15 @@ import * as ed from "@noble/ed25519";
 import { sha512 } from "@noble/hashes/sha512";
 import { leasePayload, type Lease } from "./lease.js";
 
-// Wire a synchronous SHA-512 so ed.verify() is synchronous (Rust parity: verify is sync).
+// @noble/ed25519 v2 has no built-in hashing; it requires the host to inject SHA-512.
+// We inject a SYNCHRONOUS implementation so `ed.verify()` runs synchronously — this is
+// what lets the SDK's `state`/`hasEntitlement` reads stay sync (Rust parity: verify is sync).
+//
+// This MUST stay at module scope: it runs once when this module is imported (and
+// `sideEffects: false` in package.json scopes the effect to that import). It is
+// idempotent — re-assigning the same function is safe even if the host app also uses
+// @noble/ed25519. Do not move it into the function, conditionalize it, or remove it:
+// without it, `ed.verify()` throws "sha512Sync not set" and verification breaks.
 ed.etc.sha512Sync = (...m) => sha512(ed.etc.concatBytes(...m));
 
 export const SKEW_SECONDS = 300;
