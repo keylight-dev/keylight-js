@@ -164,8 +164,21 @@ function randomId(): string {
   return randomUuid().slice(0, 8);
 }
 
+/**
+ * A human-readable device label sent as `instance_name` (display only; the seat
+ * identity is the server-issued `instance_id`). We deliberately avoid sending the
+ * full User-Agent (privacy) and instead prefer a hostname (Node, parity with the
+ * Rust SDK) or the coarse platform (browser).
+ */
 function machineName(): string {
-  if (typeof navigator !== "undefined" && navigator.userAgent) return navigator.userAgent.slice(0, 64);
-  if (typeof process !== "undefined") return `${process.platform}-${process.arch}`;
+  if (typeof process !== "undefined" && process.env) {
+    // Parity with Rust machine_name(): prefer the OS hostname env vars.
+    const host = process.env.HOSTNAME || process.env.COMPUTERNAME || process.env.HOST;
+    if (host) return host;
+    if (process.platform) return `${process.platform}-${process.arch}`;
+  }
+  const nav = typeof navigator !== "undefined" ? (navigator as Navigator & { userAgentData?: { platform?: string } }) : undefined;
+  if (nav?.userAgentData?.platform) return nav.userAgentData.platform; // e.g. "macOS" — no UA fingerprint
+  if (nav) return "browser";
   return "unknown-device";
 }
