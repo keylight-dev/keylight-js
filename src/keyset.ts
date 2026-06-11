@@ -1,3 +1,5 @@
+import type { Transport } from "./transport.js";
+
 export interface Keyset { primaryKid: string; keys: Record<string, string>; }
 
 export function parseKeyset(json: string): Keyset | null {
@@ -15,4 +17,12 @@ export function parseKeyset(json: string): Keyset | null {
   } catch {
     return null;
   }
+}
+
+/** Fetch `{base}/{tenant}/.well-known/keylight-keys`. */
+export async function fetchKeyset(transport: Transport, baseUrl: string, tenantId: string): Promise<Keyset | null> {
+  const url = `${baseUrl}/${tenantId}/.well-known/keylight-keys`;
+  const out = await transport.get(url, []);
+  if (out.kind === "response" && out.status === 200) return parseKeyset(out.body);
+  return null;
 }
