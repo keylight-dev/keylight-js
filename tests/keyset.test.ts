@@ -12,3 +12,11 @@ test("parses the well-known keyset shape", () => {
 test("invalid json -> null", () => {
   expect(parseKeyset("nope")).toBeNull();
 });
+
+test("non-string primary_kid -> null", () => {
+  expect(parseKeyset(`{"primary_kid":1,"keys":[]}`)).toBeNull();
+});
+
+test("entry missing public_key -> null (no poisoned map)", () => {
+  expect(parseKeyset(`{"primary_kid":"k1","keys":[{"kid":"k1"}]}`)).toBeNull();
+});
