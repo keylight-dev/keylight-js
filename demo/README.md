@@ -1,6 +1,6 @@
 # Keylight Notes — Demo
 
-Keylight Notes is a minimal example app that shows the `@keylight/js` SDK in action. On the free tier, users can store up to 3 notes. Activating a `pro` license key unlocks unlimited notes and the export feature. The demo runs against the live `keylight-notes-demo` tenant on `api.keylight.dev`.
+Keylight Notes is a minimal example app that shows the `@keylight-dev/js` SDK in action. On the free tier, users can store up to 3 notes. Activating a `pro` license key unlocks unlimited notes and the export feature. The demo runs against the live `keylight-notes-demo` tenant on `api.keylight.dev`.
 
 ## Usage
 

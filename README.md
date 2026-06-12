@@ -3,7 +3,7 @@
 The official JavaScript/TypeScript SDK for [Keylight](https://keylight.dev) licensing. Activate license keys, validate offline leases, manage trials, and react to license lifecycle events — from any JS runtime.
 
 ```
-npm i @keylight/js
+npm i @keylight-dev/js
 ```
 
 ## Runtime support
@@ -13,7 +13,7 @@ Universal: **browser**, **Node ≥ 18**, **Deno**, **Bun**, **edge / Cloudflare 
 ## Quick start
 
 ```ts
-import { Keylight } from "@keylight/js";
+import { Keylight } from "@keylight-dev/js";
 
 // 1. Construct the client.
 const kl = new Keylight({
@@ -131,7 +131,7 @@ Thin wrappers matching the Swift SDK's method names, for teams porting between p
 Verify a lease without a `Keylight` client instance — useful in server-side middleware or CI tooling:
 
 ```ts
-import { verifyLease, isTrusted, SKEW_SECONDS } from "@keylight/js";
+import { verifyLease, isTrusted, SKEW_SECONDS } from "@keylight-dev/js";
 
 const result = verifyLease(lease, { [kid]: base64PubKey }, Math.floor(Date.now() / 1000));
 if (!isTrusted(result)) throw new Error("Untrusted lease");
@@ -147,7 +147,7 @@ if (result.expired) throw new Error("Lease expired");
 Implement `Transport` to swap out the HTTP layer (mock in tests, add headers, proxy through a service worker, etc.):
 
 ```ts
-import type { Transport, TransportOutcome, Header } from "@keylight/js";
+import type { Transport, TransportOutcome, Header } from "@keylight-dev/js";
 
 class MyTransport implements Transport {
   async postJson(url: string, headers: Header[], body: string): Promise<TransportOutcome> { ... }
@@ -161,7 +161,7 @@ const kl = new Keylight({ ..., transport: new MyTransport() });
 Implement `LicenseStore` (three async methods: `get`, `set`, `remove`) to back the SDK with any persistence layer:
 
 ```ts
-import { MemoryStore, LocalStorageStore, FsStore, makeDefaultStore } from "@keylight/js";
+import { MemoryStore, LocalStorageStore, FsStore, makeDefaultStore } from "@keylight-dev/js";
 ```
 
 | Store | Runtime | Notes |
@@ -183,7 +183,7 @@ See [docs.keylight.dev](https://docs.keylight.dev) for the lease format, key rot
 
 | Platform | Package |
 |---|---|
-| JavaScript / TypeScript | `@keylight/js` (this package) |
+| JavaScript / TypeScript | `@keylight-dev/js` (this package) |
 | Rust | [`keylight`](https://crates.io/crates/keylight) crate |
 | Swift | `KeylightSDK` (Swift Package Manager) |
 
