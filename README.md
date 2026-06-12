@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Types](https://img.shields.io/npm/types/@keylight-dev/js.svg)](https://www.npmjs.com/package/@keylight-dev/js)
 [![Runtimes](https://img.shields.io/badge/runtimes-browser%20%C2%B7%20node%20%C2%B7%20deno%20%C2%B7%20bun%20%C2%B7%20workers-success.svg)](#runtime-support)
-[![Conformance](https://img.shields.io/badge/conformance-SP--0%20vectors-success.svg)](#conformance)
+[![Conformance](https://img.shields.io/badge/conformance-cross--SDK%20vectors-success.svg)](#conformance)
 
 Open-source JavaScript/TypeScript SDK for [Keylight](https://keylight.dev) — license your web,
 Node, Electron, and edge apps with online activation and offline Ed25519 license verification, from
@@ -31,7 +31,6 @@ any JavaScript runtime.
 - [Demo](#demo)
 - [Conformance](#conformance)
 - [Documentation](#documentation)
-- [Releasing](#releasing)
 - [Other SDKs](#other-sdks)
 - [License](#license)
 
@@ -301,14 +300,14 @@ npx tsx demo/notes.ts NOTES-PRO0-0000-0001  # pro (unlimited + export) — activ
 
 ## Conformance
 
-The security-critical lease verifier is gated by Keylight's frozen **SP-0 conformance vectors**
+The security-critical lease verifier is gated by Keylight's frozen **cross-SDK conformance vectors**
 (`tests/conformance.test.ts`). The JavaScript verifier must agree with every vector on
 `{ kidKnown, signatureValid, expired }`, which keeps offline verification behavior identical across
 the Keylight SDK family (Swift, Rust, JavaScript, …).
 
 ```bash
 npm test                                  # full suite (live tests skipped)
-npx vitest run tests/conformance.test.ts  # just the SP-0 vectors
+npx vitest run tests/conformance.test.ts  # just the conformance vectors
 KEYLIGHT_LIVE=1 npm run test:live         # opt-in live tests vs the demo tenant
 ```
 
@@ -318,28 +317,6 @@ KEYLIGHT_LIVE=1 npm run test:live         # opt-in live tests vs the demo tenant
 - **Website:** [keylight.dev](https://keylight.dev)
 - **API host:** `https://api.keylight.dev`
 
-## Releasing
-
-Versions are published via tag-triggered CI (`.github/workflows/release.yml`) using **tokenless
-OIDC trusted publishing** (no npm token in the repo):
-
-```bash
-# 1. Bump the version in BOTH package.json and src/version.ts (a test guards drift).
-# 2. Verify locally:
-npm run typecheck
-npm test
-npm run build
-
-# 3. Commit, then tag — the tag fires the release workflow:
-git commit -am "Release vX.Y.Z"
-git push origin main
-git tag -a vX.Y.Z -m "@keylight-dev/js vX.Y.Z"
-git push origin vX.Y.Z
-```
-
-The workflow upgrades npm (OIDC trusted publishing needs npm ≥ 11.5.1), then publishes
-`@keylight-dev/js` to npm with provenance.
-
 ## Other SDKs
 
 | Platform | Status | Repository |
@@ -347,7 +324,7 @@ The workflow upgrades npm (OIDC trusted publishing needs npm ≥ 11.5.1), then p
 | Swift (macOS/iOS) | Available | [keylight-swift](https://github.com/keylight-dev/keylight-swift) |
 | Rust (CLIs/daemons/Tauri) | Available | [keylight-rust](https://github.com/keylight-dev/keylight-rust) |
 | JavaScript (this repo) | Available | [keylight-js](https://github.com/keylight-dev/keylight-js) |
-| C# · C++ | Planned | unified by the same SP-0 conformance vectors |
+| C# · C++ | Planned | unified by the same cross-SDK conformance vectors |
 
 ## License
 
