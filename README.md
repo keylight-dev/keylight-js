@@ -178,7 +178,7 @@ resolved `Expired` state.
 
 ## Offline Validation
 
-The offline artifact is a signed **`v3` lease** issued by the Keylight Worker. The SDK reconstructs
+The offline artifact is a signed **`v3` lease** issued by the Keylight API. The SDK reconstructs
 the exact signed payload (entitlements sorted, pipe-delimited) and verifies it with **Ed25519**
 against the tenant's trusted keyset, applying a **300-second clock-skew** tolerance.
 
