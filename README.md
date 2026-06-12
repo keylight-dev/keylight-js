@@ -1,194 +1,360 @@
-# Keylight SDK for JavaScript
+# Keylight JavaScript SDK
 
-The official JavaScript/TypeScript SDK for [Keylight](https://keylight.dev) licensing. Activate license keys, validate offline leases, manage trials, and react to license lifecycle events — from any JS runtime.
+[![npm](https://img.shields.io/npm/v/@keylight-dev/js.svg)](https://www.npmjs.com/package/@keylight-dev/js)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Types](https://img.shields.io/npm/types/@keylight-dev/js.svg)](https://www.npmjs.com/package/@keylight-dev/js)
+[![Runtimes](https://img.shields.io/badge/runtimes-browser%20%C2%B7%20node%20%C2%B7%20deno%20%C2%B7%20bun%20%C2%B7%20workers-success.svg)](#runtime-support)
+[![Conformance](https://img.shields.io/badge/conformance-SP--0%20vectors-success.svg)](#conformance)
 
-```
-npm i @keylight-dev/js
-```
+Open-source JavaScript/TypeScript SDK for [Keylight](https://keylight.dev) — license your web,
+Node, Electron, and edge apps with online activation and offline Ed25519 license verification, from
+any JavaScript runtime.
+
+> **In one line:** a software-licensing SDK for JavaScript/TypeScript — license-key activation and
+> validation, entitlement/feature gating, trials and free tiers, and tamper-resistant **offline
+> license verification** (signed `v3` lease, Ed25519 + clock-skew tolerance) for the browser, Node,
+> Deno, Bun, and edge/Workers. Universal, dependency-light, and fully typed.
+
+## Table of Contents
+
+- [Features](#features)
+- [Runtime support](#runtime-support)
+- [Quick Start](#quick-start)
+- [License Lifecycle](#license-lifecycle)
+- [License States](#license-states)
+- [Entitlements](#entitlements)
+- [Offline Validation](#offline-validation)
+- [Refresh, Trials & Free Tier](#refresh-trials--free-tier)
+- [Lifecycle Events](#lifecycle-events)
+- [Configuration Reference](#configuration-reference)
+- [Pluggable Transport & Storage](#pluggable-transport--storage)
+- [Demo](#demo)
+- [Conformance](#conformance)
+- [Documentation](#documentation)
+- [Releasing](#releasing)
+- [Other SDKs](#other-sdks)
+- [License](#license)
+
+## Features
+
+- **License Lifecycle** — Activate, validate, and deactivate license keys with a small, explicit API.
+- **Offline Verification** — The single offline artifact is a signed `v3` **lease**, verified with
+  **Ed25519** (`@noble/ed25519`) and a 300-second clock-skew tolerance. An optional `maxOfflineDays`
+  grace caps how long a device may run without checking in.
+- **Universal** — One package for **browser**, **Node ≥ 18**, **Deno**, **Bun**, and
+  **edge / Cloudflare Workers**. Uses only `fetch` + `@noble/*` — no Node-specific APIs in the core.
+- **Synchronous reads** — Network calls are `async`, but `state()`, `hasEntitlement()`, and the
+  cached getters are **synchronous** (backed by an in-memory cache hydrated by `load()`).
+- **Entitlements** — Feature gating from the cached lease: `hasEntitlement("pro")`.
+- **Trials & Free Tier** — Built-in local trial timer, free-tier mode, and an anonymous "keyless"
+  usage beacon.
+- **Lifecycle Events** — `on(event, fn)` for `Renewed` / `Cancelled` / `Expired` / `Restored`, plus
+  `subscribe(fn)` for any state change.
+- **Clock-Manipulation Detection** — Flags backward/forward system-clock tampering.
+- **Device Telemetry** — Auto-attaches `sdk_version`, `platform`, and (optional) `app_version`
+  (clamped to the backend's limits).
+- **Network Resilience** — Automatic retry with exponential backoff + jitter; honors `Retry-After`.
+- **Pluggable** — Swap the storage backend (`LicenseStore`) or HTTP transport (`Transport`) via
+  interfaces for tests or custom platforms.
+- **Fully typed** — Ships ESM, CJS, an IIFE browser bundle, and complete `.d.ts`.
 
 ## Runtime support
 
-Universal: **browser**, **Node ≥ 18**, **Deno**, **Bun**, **edge / Cloudflare Workers**. The SDK requires only `fetch` and [`@noble/ed25519`](https://github.com/paulmillr/noble-ed25519) (bundled as a dependency) — no Node-specific APIs in the core path.
+Universal: **browser**, **Node ≥ 18**, **Deno**, **Bun**, **edge / Cloudflare Workers**. The SDK
+requires only `fetch` and [`@noble/ed25519`](https://github.com/paulmillr/noble-ed25519) +
+[`@noble/hashes`](https://github.com/paulmillr/noble-hashes) (bundled dependencies). Ed25519 verify
+is synchronous, so license state can be read without `await`.
 
-## Quick start
+## Quick Start
+
+```bash
+npm install @keylight-dev/js
+```
 
 ```ts
-import { Keylight } from "@keylight-dev/js";
+import { Keylight, fetchKeyset, FetchTransport } from "@keylight-dev/js";
 
-// 1. Construct the client.
+// Optionally fetch the tenant's trusted Ed25519 keyset so leases verify offline.
+// (You can also pin keys explicitly via `trustedKeys`.)
+const ks = await fetchKeyset(new FetchTransport(), "https://api.keylight.dev", "your-tenant");
+
 const kl = new Keylight({
   tenantId: "your-tenant",
   productId: "your-product",
   appVersion: "1.0.0",
+  maxOfflineDays: 7,            // optional offline grace window
+  trustedKeys: ks?.keys ?? {},  // for offline lease verification
 });
 
-// 2. Hydrate the in-memory cache from the persistent store (async, idempotent).
+// Hydrate the in-memory cache from the persistent store (async, idempotent).
 await kl.load();
 
-// 3. Activate a license key (first launch or after a user enters their key).
-const result = await kl.activate("XXXX-XXXX-XXXX-XXXX");
-if (!result.activated) {
-  console.error(result.error);
-}
+// Activate a license key (online). The returned lease is Ed25519-verified
+// *before* anything is persisted.
+const res = await kl.activate("USER-LICENSE-KEY");
+if (!res.activated) console.error(res.error);
 
-// 4. Check entitlements synchronously (no await — reads from the cached lease).
+// Gate features on entitlements — synchronous, from the cached lease.
 if (kl.hasEntitlement("pro")) {
-  // unlock pro feature
+  // unlock pro features
 }
 
-// 5. Re-validate against the server (e.g. on app focus / periodic refresh).
-await kl.validate();
+// Release the seat when uninstalling / switching devices.
+await kl.deactivate();
+```
 
-// 6. React to lifecycle events.
-kl.on("Cancelled", () => {
-  // license was cancelled; show upgrade prompt
+> Call `await kl.load()` once at startup — it hydrates the cache that backs the synchronous reads
+> (`state()`, `hasEntitlement()`, `cached*`). The licensing methods also await it internally.
+
+For a browser `<script>` tag, the IIFE bundle exposes the namespace as `window.KeylightSDK`
+(`new KeylightSDK.Keylight({ … })`).
+
+## License Lifecycle
+
+```
+┌─────────────┐     ┌─────────────┐     ┌──────────────┐
+│  activate   │────▶│  validate   │────▶│  deactivate  │
+└─────────────┘     └─────────────┘     └──────────────┘
+                          ▲
+                          │ on launch / on events (no background timers)
+                  ┌────────────────────┐
+                  │  refreshIfNeeded   │
+                  └────────────────────┘
+```
+
+| Method | Description |
+|--------|-------------|
+| `activate(key) → ActivationResult` | Activates a key on this device. Verifies the returned lease before persisting; returns `instanceId`, the lease, and expiry. |
+| `validate() → ValidationResult` | Re-checks the stored license online. Decodes hard-expiry (`422`) responses and preserves fallback/expired leases so state can resolve. |
+| `deactivate()` | Releases the seat and clears local license state (even if the network call fails). Call on uninstall or device switch. |
+| `refreshIfNeeded() → ValidationResult \| null` | Validates only if due (debounce 5 min, stale 6 h, or within 24 h of expiry). Safe to call often. |
+| `checkOnLaunch()` | Convenience: refresh if a license is stored, else no-op. |
+
+## License States
+
+`state()` resolves a single high-level status from the cached lease, trial, and free-tier config
+(no network). It is a discriminated union on `.kind`:
+
+| State | Meaning |
+|-------|---------|
+| `Licensed` | Current, signature-valid `active` lease. |
+| `Limited` | Signature-valid `fallback` lease (grace mode). |
+| `Trial` (carries `daysLeft`) | No license, but a local trial is active. |
+| `FreeTier` | No license, free tier enabled. |
+| `Expired` | Lease expired, or a license was stored but is no longer current. |
+| `Invalid` | No license, no trial, no free tier. |
+
+```ts
+const s = kl.state();
+if (s.kind === "Trial") console.log(`${s.daysLeft} days left`);
+```
+
+## Entitlements
+
+Entitlements are feature keys carried inside the signed lease and checked offline:
+
+```ts
+if (kl.hasEntitlement("cloud-sync")) {
+  enableCloudSync();
+}
+```
+
+`hasEntitlement` returns `true` only when the cached lease is signature-valid, unexpired, not
+`expired`-status, and within `maxOfflineDays` — so offline feature gating never disagrees with the
+resolved `Expired` state.
+
+## Offline Validation
+
+The offline artifact is a signed **`v3` lease** issued by the Keylight Worker. The SDK reconstructs
+the exact signed payload (entitlements sorted, pipe-delimited) and verifies it with **Ed25519**
+against the tenant's trusted keyset, applying a **300-second clock-skew** tolerance.
+
+```ts
+import { Keylight } from "@keylight-dev/js";
+
+const kl = new Keylight({
+  tenantId: "your-tenant",
+  productId: "your-product",
+  // Pin trusted keys explicitly instead of fetching them:
+  trustedKeys: { k1: "<raw ed25519 public key, base64>" },
+  maxOfflineDays: 7, // omit to run offline as long as the lease itself is current
 });
 ```
 
-## API reference
-
-### `new Keylight(options)`
-
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `tenantId` | `string` | required | Your Keylight tenant ID |
-| `productId` | `string` | required | Your product ID |
-| `appVersion` | `string` | — | Reported as telemetry on activate/validate |
-| `sdkKey` | `string` | — | Optional SDK key (sent as `X-Keylight-SDK-Key`) |
-| `trustedKeys` | `Record<string, string>` | `{}` | `kid → base64 ed25519 public key` for offline lease verification |
-| `maxOfflineDays` | `number` | — | Gate `cachedLease` after N days without online validation |
-| `trialDurationDays` | `number` | `14` | Trial length used by `checkTrial()` |
-| `freeTierEnabled` | `boolean` | `false` | Include free-tier state in `state()` resolution |
-| `keyPrefix` | `string` | — | Enforce a key prefix (e.g. `"KL"`) in `validateKeyFormat` |
-| `transport` | `Transport` | `FetchTransport` | Injectable HTTP transport |
-| `store` | `LicenseStore` | auto-detected | Injectable persistence layer |
-
-### Core methods
-
-| Method | Description |
-|---|---|
-| `load()` | Hydrate the in-memory cache from the store. Call once on startup; idempotent. |
-| `activate(key)` | Activate a license key. Returns `ActivationResult`. Fails fast on invalid format. |
-| `validate()` | Re-validate the stored key+instance against the server. Returns `ValidationResult`. |
-| `deactivate()` | Release the activation seat on the server and clear all local state. |
-
-### State & entitlements
-
-| Method / getter | Description |
-|---|---|
-| `state()` | Synchronous `LicenseState` (a discriminated union on `.kind`) — `"Licensed"`, `"Limited"`, `"FreeTier"`, `"Trial"` (carries `daysLeft`), `"Expired"`, `"Invalid"`. |
-| `hasEntitlement(feature)` | `true` if the cached lease contains `feature` in its entitlements list. |
-| `cachedLease` | The trust-gated, unexpired cached lease (`Lease | null`). Enforces `maxOfflineDays`. |
-| `cachedLicenseKey` | The stored raw license key string, or `null`. |
-| `cachedLicenseExpiresAt` | Epoch-seconds subscription expiry, or `null`. |
-| `hasStoredLicense()` | `true` when a license key is persisted locally. |
-
-### Smart refresh
-
-| Method | Description |
-|---|---|
-| `checkOnLaunch()` | Call on app start: validates online if a key is stored and the cache is stale. |
-| `refreshIfNeeded()` | Validates only when stale (debounce 5 min; refresh threshold 6 h; near-expiry override). |
-
-### Trials & free tier
-
-| Method | Description |
-|---|---|
-| `startTrial()` | Record a trial start timestamp. No-op if already started. |
-| `checkTrial()` | Returns `TrialStatus`: `{ kind: "not_started" | "active", daysLeft } | { kind: "expired" }`. |
-| `reportKeylessState(state)` | Ping the server with keyless/free-tier state (debounced to once/day per state). |
-| `freeTierInstanceId()` | Returns the stable persisted free-tier instance UUID (creates one on first call). |
-
-### Events & subscriptions
-
-| Method | Description |
-|---|---|
-| `on(event, fn)` | Subscribe to a `LicenseLifecycleEvent` — one of `"Renewed"`, `"Cancelled"`, `"Expired"`, `"Restored"`. Returns an unsubscribe function. |
-| `subscribe(fn)` | Subscribe to every state change. Callback receives the new `LicenseState`. Returns unsubscribe. |
-
-### Utilities
-
-| Export | Description |
-|---|---|
-| `upgradeUrl` | Getter returning the hosted upgrade portal URL (requires a stored license key). |
-| `isClockManipulated()` | Heuristic — `true` if the system clock moved backward since `last_seen`. |
-
-### Swift-parity convenience aliases
-
-Thin wrappers matching the Swift SDK's method names, for teams porting between platforms:
-
-| Alias | Equivalent to |
-|---|---|
-| `isEntitled` (getter) | `true` when `state()` is `Licensed` or an active `Trial`. |
-| `productFreeTierEnabled()` | The configured `freeTierEnabled` flag. |
-| `isValidKeyFormat(key)` | `validateKeyFormat(key, keyPrefix)` as an instance method. |
-| `refresh(force?)` | `force` (default) → `validate()`; otherwise `refreshIfNeeded()`. |
-| `freeTierInstanceIdIfPresent()` | The persisted free-tier id, or `null` — without creating one. |
-| `reportFreeTier()` | `reportKeylessState("free_tier")`. |
-
-## Standalone offline verification
-
-Verify a lease without a `Keylight` client instance — useful in server-side middleware or CI tooling:
+- The trusted keyset can be fetched once from `GET /{tenant}/.well-known/keylight-keys`
+  (`fetchKeyset`) or pinned at construction time.
+- `cachedLease` returns the lease only when it is `kid`-known, signature-valid, unexpired, and
+  (if set) within `maxOfflineDays` of the last online validation.
+- You can verify a lease standalone (e.g. in server middleware) without a client instance:
 
 ```ts
 import { verifyLease, isTrusted, SKEW_SECONDS } from "@keylight-dev/js";
 
-const result = verifyLease(lease, { [kid]: base64PubKey }, Math.floor(Date.now() / 1000));
-if (!isTrusted(result)) throw new Error("Untrusted lease");
-if (result.expired) throw new Error("Lease expired");
+const r = verifyLease(lease, { [kid]: base64PubKey }, Math.floor(Date.now() / 1000));
+if (!isTrusted(r)) throw new Error("Untrusted lease");
+if (r.expired) throw new Error("Lease expired");
 ```
 
-`SKEW_SECONDS` (300) is the built-in clock-skew tolerance applied to `expiresAt`.
+> **Storage & security note:** the at-rest license cache is **plaintext** (localStorage in the
+> browser, a JSON file in Node). The security boundary is the **Ed25519-signed lease**, not at-rest
+> secrecy — a tampered or forged lease cannot pass `isTrusted()` without the tenant's private key.
+> In a browser, any key the SDK could use to "encrypt" the cache would have to live next to it, so
+> encryption there would be theater; integrity (the signature) is what protects you.
 
-## Pluggable transport and storage
+## Refresh, Trials & Free Tier
 
-### Transport
-
-Implement `Transport` to swap out the HTTP layer (mock in tests, add headers, proxy through a service worker, etc.):
+There are **no background timers**. The host drives refresh on launch and on meaningful events:
 
 ```ts
-import type { Transport, TransportOutcome, Header } from "@keylight-dev/js";
-
-class MyTransport implements Transport {
-  async postJson(url: string, headers: Header[], body: string): Promise<TransportOutcome> { ... }
-}
-
-const kl = new Keylight({ ..., transport: new MyTransport() });
+await kl.checkOnLaunch();     // validate if due, on startup
+await kl.refreshIfNeeded();   // call again on focus / purchase / resume
 ```
 
-### LicenseStore
+Trials and free tier are local and offline-first:
 
-Implement `LicenseStore` (three async methods: `get`, `set`, `remove`) to back the SDK with any persistence layer:
+```ts
+await kl.startTrial();        // begins the trial clock once
+const t = kl.checkTrial();    // { kind: "not_started" | "active", daysLeft } | { kind: "expired" }
+if (t.kind === "active") console.log(`${t.daysLeft} days left`);
+
+// Anonymous, debounced usage beacon for trial / free-tier / expired devices:
+await kl.reportKeylessState("trial");
+
+// Tamper check and a pre-filled hosted upgrade link:
+const tampered = kl.isClockManipulated();
+if (kl.upgradeUrl) console.log(`Upgrade: ${kl.upgradeUrl}`);
+```
+
+## Lifecycle Events
+
+Subscribe to react when the resolved state crosses a transition. `on(event, fn)` targets a specific
+event; `subscribe(fn)` fires on every state change with the new `LicenseState`. Both return an
+unsubscribe function.
+
+```ts
+const off = kl.on("Cancelled", () => showUpgradePrompt());
+kl.subscribe((state) => render(state));
+// ...later
+off();
+```
+
+| Event | Fires when |
+|-------|-----------|
+| `Renewed` | Stayed `Licensed` and the expiry moved later. |
+| `Cancelled` | `Licensed` → `Limited` or `Expired`. |
+| `Expired` | Any state → `Expired`. |
+| `Restored` | `Expired`/`Limited`/`Invalid` → `Licensed`. |
+
+Events are evaluated during `validate()` and re-derive the previous state from the persisted lease,
+so a transition won't re-fire across restarts.
+
+## Configuration Reference
+
+Pass `KeylightOptions` to `new Keylight({ … })`:
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `tenantId` | `string` | — | Your Keylight tenant (required). |
+| `productId` | `string` | — | Your product (required). |
+| `sdkKey` | `string` | — | Optional SDK key, sent as `X-Keylight-SDK-Key`. |
+| `trustedKeys` | `Record<string,string>` | `{}` | Trusted Ed25519 public keys (`kid → base64`) for offline verification. |
+| `maxOfflineDays` | `number` | — | Offline grace window since last online validation. Omit = until the lease itself expires. |
+| `trialDurationDays` | `number` | `14` | Local trial length. |
+| `freeTierEnabled` | `boolean` | `false` | Resolve to `FreeTier` when there's no license/trial. |
+| `appVersion` | `string` | — | Reported in telemetry. |
+| `baseUrl` | `string` | `https://api.keylight.dev` | API base URL. |
+| `keyPrefix` | `string` | — | Client-side key-format check (e.g. `"PROD"`). |
+| `deviceId` | `string` | generated | Override the persisted free-tier/keyless instance id. |
+| `transport` | `Transport` | `FetchTransport` | Injectable HTTP transport. |
+| `store` | `LicenseStore` | auto-detected | Injectable persistence layer. |
+
+> A small set of **Swift-parity aliases** is also available for teams porting between platforms:
+> `isEntitled`, `productFreeTierEnabled()`, `isValidKeyFormat(key)`, `refresh(force?)`,
+> `freeTierInstanceIdIfPresent()`, `reportFreeTier()`.
+
+## Pluggable Transport & Storage
+
+Implement `Transport` to swap the HTTP layer (mock in tests, add headers, proxy through a service
+worker). Implement `LicenseStore` (`get`/`set`/`remove`, all async) to back the SDK with any
+persistence layer:
 
 ```ts
 import { MemoryStore, LocalStorageStore, FsStore, makeDefaultStore } from "@keylight-dev/js";
 ```
 
 | Store | Runtime | Notes |
-|---|---|---|
-| `MemoryStore` | All | In-process only; state lost on reload |
-| `LocalStorageStore` | Browser | Namespaced under `keylight_` prefix by default |
-| `FsStore` | Node / Bun | One JSON file at `~/.keylight.json` by default |
-| `makeDefaultStore()` | All | Auto-selects: `LocalStorageStore` → `FsStore` → `MemoryStore` |
+|-------|---------|-------|
+| `MemoryStore` | All | In-process only; state lost on reload. |
+| `LocalStorageStore` | Browser | Namespaced under a `keylight_` prefix by default. |
+| `FsStore` | Node / Bun | One JSON file at `~/.keylight.json` by default. |
+| `makeDefaultStore()` | All | Auto-selects: `LocalStorageStore` → `FsStore` → `MemoryStore`. |
 
-## Security and storage notes
+## Demo
 
-The at-rest license cache is **plaintext** (JSON in localStorage or a home-directory file). The security boundary is the **Ed25519-signed lease**: the SDK verifies the server signature on every lease it stores and on every `cachedLease` access. A tampered or forged lease cannot pass `isTrusted()` without the private key.
+The [`demo/`](./demo) "Keylight Notes" app shows entitlement gating end-to-end (free = 3 notes; the
+`pro` entitlement unlocks unlimited notes + export) against the live public demo tenant:
 
-Device identity is a stable UUID persisted in the same store under a `free_tier_instance_id` key. It is used only for seat management and free-tier reporting — it is not tied to any personally identifying information.
+```bash
+npx tsx demo/notes.ts                       # free tier (3-note limit) — works offline
+npx tsx demo/notes.ts NOTES-PRO0-0000-0001  # pro (unlimited + export) — activates online
+```
 
-See [docs.keylight.dev](https://docs.keylight.dev) for the lease format, key rotation, and security model.
+## Conformance
 
-## Keylight SDK family
+The security-critical lease verifier is gated by Keylight's frozen **SP-0 conformance vectors**
+(`tests/conformance.test.ts`). The JavaScript verifier must agree with every vector on
+`{ kidKnown, signatureValid, expired }`, which keeps offline verification behavior identical across
+the Keylight SDK family (Swift, Rust, JavaScript, …).
 
-| Platform | Package |
-|---|---|
-| JavaScript / TypeScript | `@keylight-dev/js` (this package) |
-| Rust | [`keylight`](https://crates.io/crates/keylight) crate |
-| Swift | `KeylightSDK` (Swift Package Manager) |
+```bash
+npm test                                  # full suite (live tests skipped)
+npx vitest run tests/conformance.test.ts  # just the SP-0 vectors
+KEYLIGHT_LIVE=1 npm run test:live         # opt-in live tests vs the demo tenant
+```
 
-All three SDKs implement the same SP-0 conformance surface and share the same lease format and Ed25519 verification semantics.
+## Documentation
+
+- **Platform docs:** [docs.keylight.dev](https://docs.keylight.dev)
+- **Website:** [keylight.dev](https://keylight.dev)
+- **API host:** `https://api.keylight.dev`
+
+## Releasing
+
+Versions are published via tag-triggered CI (`.github/workflows/release.yml`) using **tokenless
+OIDC trusted publishing** (no npm token in the repo):
+
+```bash
+# 1. Bump the version in BOTH package.json and src/version.ts (a test guards drift).
+# 2. Verify locally:
+npm run typecheck
+npm test
+npm run build
+
+# 3. Commit, then tag — the tag fires the release workflow:
+git commit -am "Release vX.Y.Z"
+git push origin main
+git tag -a vX.Y.Z -m "@keylight-dev/js vX.Y.Z"
+git push origin vX.Y.Z
+```
+
+The workflow upgrades npm (OIDC trusted publishing needs npm ≥ 11.5.1), then publishes
+`@keylight-dev/js` to npm with provenance.
+
+## Other SDKs
+
+| Platform | Status | Repository |
+|----------|--------|------------|
+| Swift (macOS/iOS) | Available | [keylight-swift](https://github.com/keylight-dev/keylight-swift) |
+| Rust (CLIs/daemons/Tauri) | Available | [keylight-rust](https://github.com/keylight-dev/keylight-rust) |
+| JavaScript (this repo) | Available | [keylight-js](https://github.com/keylight-dev/keylight-js) |
+| C# · C++ | Planned | unified by the same SP-0 conformance vectors |
 
 ## License
 
-MIT. See [LICENSE](./LICENSE).
+MIT License. See [LICENSE](LICENSE) for details.
+
+---
+
+<sub>Keylight JavaScript SDK — software licensing for JS/TS: license-key activation & validation,
+offline Ed25519 lease verification, entitlement/feature gating, trials and free tiers, lifecycle
+events, and pluggable storage/transport — for the browser, Node, Deno, Bun, and edge runtimes.</sub>
