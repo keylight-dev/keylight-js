@@ -11,7 +11,16 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 20, registry-url: "https://registry.npmjs.org" }
+      - run: npm install -g npm@latest # OIDC trusted publishing needs npm >= 11.5.1
       - run: npm ci
       - run: npm test
       - run: npm run build
-      - run: npm publish --access public --provenance
+      - name: Publish to npm (tokenless OIDC, idempotent)
+        run: |
+          if npm publish --access public --provenance 2>publish.err; then
+            echo "published"
+          elif grep -qiE "cannot publish over|previously published|already exists" publish.err; then
+            cat publish.err; echo "already on npm — ok"
+          else
+            cat publish.err; exit 1
+          fi
