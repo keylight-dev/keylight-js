@@ -15,8 +15,22 @@ any JavaScript runtime.
 > license verification** (signed `v3` lease, Ed25519 + clock-skew tolerance) for the browser, Node,
 > Deno, Bun, and edge/Workers. Universal, dependency-light, and fully typed.
 
+## Why Keylight
+
+Licensing shouldn't mean bolting a heavyweight, phone-home-or-die SDK onto your app.
+
+- **Works offline.** The license is a signed lease your app verifies locally with Ed25519 — no
+  network round-trip to gate a feature, no lockout when the user is offline.
+- **Tamper-resistant by design.** Entitlements live *inside* the signature; a forged or hand-edited
+  lease can't pass verification without the tenant's private key.
+- **One SDK, every runtime.** The same package runs in the browser, Node, Deno, Bun, and edge — and
+  verifies licenses identically to the Swift and Rust SDKs (proven by shared conformance vectors).
+- **Small and explicit.** A handful of methods, no background daemons, no magic — you decide when to
+  check in.
+
 ## Table of Contents
 
+- [Why Keylight](#why-keylight)
 - [Features](#features)
 - [Runtime support](#runtime-support)
 - [Quick Start](#quick-start)
