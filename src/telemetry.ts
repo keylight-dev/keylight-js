@@ -10,9 +10,14 @@ export function detectPlatform(): string {
   return "unknown";
 }
 
-/** Inject telemetry fields into a request body map (parity with Rust telemetry::apply). */
+// Backend zod caps (activate/validate/keyless routes): app_version & sdk_version <= 64, platform <= 32.
+// Clamp client-side so an over-long value is recorded (truncated) instead of failing the request with a 400.
+export const APP_VERSION_MAX = 64;
+export const PLATFORM_MAX = 32;
+
+/** Inject telemetry fields into a request body map (parity with Rust telemetry::apply), clamped to backend limits. */
 export function applyTelemetry(map: Record<string, unknown>, appVersion: string | undefined): void {
-  map.sdk_version = SDK_VERSION;
-  map.platform = detectPlatform();
-  if (appVersion) map.app_version = appVersion;
+  map.sdk_version = SDK_VERSION.slice(0, APP_VERSION_MAX);
+  map.platform = detectPlatform().slice(0, PLATFORM_MAX);
+  if (appVersion) map.app_version = appVersion.slice(0, APP_VERSION_MAX);
 }
