@@ -1,6 +1,6 @@
 {
   "name": "@keylight-dev/js",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Official JavaScript/TypeScript SDK for Keylight licensing.",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -13,9 +13,14 @@
       "require": "./dist/index.cjs"
     }
   },
-  "files": ["dist", "src"],
+  "files": [
+    "dist",
+    "src"
+  ],
   "sideEffects": false,
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",

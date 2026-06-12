@@ -13,7 +13,16 @@ export interface Transport {
 
 /** Default transport over the Web `fetch` API (universal). */
 export class FetchTransport implements Transport {
-  constructor(private readonly fetchImpl: typeof fetch = fetch) {}
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(fetchImpl: typeof fetch = globalThis.fetch) {
+    // Bind to the global. Native browser/Worker `fetch` throws "fetch called on
+    // an object that does not implement interface Window" if invoked as a method
+    // (i.e. `this.fetchImpl(...)` sets `this` to this transport instance). Binding
+    // a user-supplied impl to `globalThis` is harmless — impls that care about
+    // `this` are arrows or already bound, which ignore it.
+    this.fetchImpl = fetchImpl.bind(globalThis);
+  }
 
   private async run(url: string, init: RequestInit): Promise<TransportOutcome> {
     try {

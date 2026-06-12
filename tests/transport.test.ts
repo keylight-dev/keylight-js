@@ -48,3 +48,19 @@ test("Retry-After HTTP-date form -> undefined", async () => {
   const out = await t.postJson("https://x/api", [], "{}");
   expect((out as { retryAfter?: number }).retryAfter).toBeUndefined();
 });
+
+// Regression: native browser/Worker `fetch` must NOT be invoked as a method of
+// the transport instance (`this.fetchImpl(...)`) — browsers throw "fetch called
+// on an object that does not implement interface Window". It must be bound to
+// the global. A regular function (not an arrow) captures the real `this`.
+test("invokes fetch bound to the global, not the transport instance", async () => {
+  let capturedThis: unknown = "unset";
+  const fakeFetch = function (this: unknown) {
+    capturedThis = this;
+    return Promise.resolve(new Response("ok", { status: 200 }));
+  } as unknown as typeof fetch;
+  const t = new FetchTransport(fakeFetch);
+  await t.get("https://x/keys", []);
+  expect(capturedThis).not.toBe(t);
+  expect(capturedThis).toBe(globalThis);
+});
