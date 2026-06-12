@@ -9,8 +9,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # No `registry-url`: it makes setup-node write an .npmrc with
+      # `_authToken=${NODE_AUTH_TOKEN}` (empty here), which shadows OIDC and 404s
+      # `npm publish` on a scoped package's later versions (npm/cli#8678). OIDC
+      # trusted publishing must run with NO NODE_AUTH_TOKEN set.
       - uses: actions/setup-node@v4
-        with: { node-version: 20, registry-url: "https://registry.npmjs.org" }
+        with: { node-version: 24 }
       - run: npm install -g npm@latest # OIDC trusted publishing needs npm >= 11.5.1
       - run: npm ci
       - run: npm test
