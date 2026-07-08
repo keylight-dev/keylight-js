@@ -55,3 +55,43 @@ test("startTrial seeds a free-tier instance id (Rust parity for conversion linki
   await kl.startTrial();
   expect(await store.get(ACCOUNT.FREE_TIER_INSTANCE_ID)).toBeTruthy();
 });
+
+test("reportKeylessState includes machine_hash when a machine id is available", async () => {
+  let captured: string | null = null;
+  const t: Transport = {
+    async postJson(_url, _headers, body) { captured = body; return { kind: "response", status: 200, body: "{}" }; },
+    async get() { return { kind: "terminal", error: "x" }; },
+  };
+  const kl = new Keylight({
+    tenantId: "testco",
+    productId: "testapp",
+    transport: t,
+    store: new MemoryStore(),
+    machineId: () => "hardware-1",
+  });
+  await kl.load();
+  await kl.reportKeylessState("free_tier");
+  expect(captured).not.toBeNull();
+  const body = JSON.parse(captured as unknown as string);
+  expect(body.machine_hash).toBe("8e8871112f28cabda180ada131d0b4f4f07c72fb47c5d884edbe32812885b22a");
+});
+
+test("reportKeylessState omits machine_hash when no machine id is available", async () => {
+  let captured: string | null = null;
+  const t: Transport = {
+    async postJson(_url, _headers, body) { captured = body; return { kind: "response", status: 200, body: "{}" }; },
+    async get() { return { kind: "terminal", error: "x" }; },
+  };
+  const kl = new Keylight({
+    tenantId: "testco",
+    productId: "testapp",
+    transport: t,
+    store: new MemoryStore(),
+    machineId: () => null,
+  });
+  await kl.load();
+  await kl.reportKeylessState("free_tier");
+  expect(captured).not.toBeNull();
+  const body = JSON.parse(captured as unknown as string);
+  expect("machine_hash" in body).toBe(false);
+});

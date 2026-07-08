@@ -9,6 +9,7 @@ import { decide, backoffMs, clampSleepMs, jitterMs, MAX_ATTEMPTS } from "./retry
 import { ClientError, ServerError, RateLimited, TimeoutError, NetworkError, InvalidResponse, LeaseVerificationFailed, NoStoredLicense } from "./errors.js";
 import { lifecycleEvent, resolveState, type LicenseState, type LicenseLifecycleEvent, type TrialStatus, type KeylessState } from "./state.js";
 import { clockManipulated } from "./clock.js";
+import { machineHash, readMachineId } from "./machine.js";
 
 export interface ActivationResult {
   activated: boolean;
@@ -40,12 +41,14 @@ export class Keylight {
   private cache = new Map<string, string>();
   private hydrated: Promise<void> | null = null;
   private readonly storeOption?: LicenseStore;
+  private readonly machineId: () => string | null | Promise<string | null>;
 
   constructor(options: KeylightOptions) {
     this.cfg = normalizeConfig(options);
     this.transport = options.transport ?? new FetchTransport();
     this.storeOption = options.store;
     this.store = options.store ?? new MemoryStore(); // replaced during hydrate() if no store given
+    this.machineId = options.machineId ?? readMachineId;
   }
 
   /** Hydrate the in-memory cache from the (possibly async) store. Idempotent. */
@@ -391,7 +394,10 @@ export class Keylight {
     const within = lastPing !== null && nowSecs() - lastPing < 86400;
     if (!changed && within) return;
     const instance = await this.freeTierInstanceId();
-    const body = this.bodyWithTelemetry({ instance_id: instance, state });
+    const map: Record<string, unknown> = { instance_id: instance, state };
+    const hw = await this.machineId();
+    if (hw) map.machine_hash = machineHash(this.cfg.tenantId, this.cfg.productId, hw);
+    const body = this.bodyWithTelemetry(map);
     const out = await this.post("keyless", body).catch(() => null);
     // post() returns only on 200; on success record state + ping (parity with Rust).
     if (out) { await this.setStr(ACCOUNT.KEYLESS_LAST_STATE, state); await this.setStr(ACCOUNT.LAST_KEYLESS_PING_AT, String(nowSecs())); }

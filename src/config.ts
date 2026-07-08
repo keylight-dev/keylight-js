@@ -18,6 +18,9 @@ export interface KeylightOptions {
   deviceId?: string;        // overrides the persisted free-tier/keyless instance id
   transport?: Transport;    // injectable
   store?: LicenseStore;     // injectable
+  /** Test seam for the OS/hardware machine id used to derive `machine_hash` on the
+   *  keyless heartbeat. Not part of the normalized config — defaults to `readMachineId`. */
+  machineId?: () => string | null | Promise<string | null>;
 }
 
 export interface KeylightConfig {
