@@ -1,6 +1,6 @@
 {
   "name": "@keylight-dev/js",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Official JavaScript/TypeScript SDK for Keylight licensing.",
   "type": "module",
   "repository": { "type": "git", "url": "git+https://github.com/keylight-dev/keylight-js.git" },
