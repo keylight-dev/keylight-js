@@ -288,16 +288,41 @@ export class Keylight {
    * (G1). `refreshIfNeeded`'s cadence is unchanged and still governs long-running
    * hosts between launches.
    *
-   * A definitive rejection is reconciled into the store by `validate()` itself (see
-   * its `!resp.valid` branch), so `state()` denies immediately after this returns.
-   * A thrown (transient: network/timeout/5xx) error is swallowed here — the host
-   * keeps running on the last-known-good cached lease, still subject to
-   * `maxOfflineDays` via `state()`/`cachedLease` (G4).
+   * A server-side definitive rejection (`!resp.valid`) is reconciled into the store by
+   * `validate()` itself, so `state()` denies immediately after this returns.
+   *
+   * A thrown error is triaged rather than blanket-swallowed (G5):
+   *  - GENUINELY TRANSIENT (`NetworkError` / `TimeoutError` / `ServerError` 5xx /
+   *    `RateLimited`) ⇒ keep the last-known-good cached lease, still bounded by
+   *    `maxOfflineDays` via `state()`/`cachedLease` (G4).
+   *  - `InvalidResponse` (malformed body) ⇒ DENY. The trusted worker has no legitimate
+   *    reason to send garbage, and `validate()` throws it BEFORE its own store
+   *    reconciliation, so the stale still-"active" cached lease would otherwise survive.
+   *  - `LeaseVerificationFailed` with a KNOWN kid ⇒ DENY. A trusted signing key produced
+   *    a bad signature over this payload ⇒ the served lease is tampered/forged; a forged
+   *    lease must never silently keep the user entitled off the old cached lease.
+   *  - `LeaseVerificationFailed` with an UNKNOWN kid ⇒ KEEP. Indistinguishable from a
+   *    legitimate server-side signing-key rotation; denying here would lock out paying
+   *    users the moment the worker rotates keys. Treated as transient.
+   *
+   * The deny path uses the SAME mechanism as `validate()`'s no-lease `!resp.valid`
+   * branch — drop the cached lease so `state()` stops reporting Licensed — then fires
+   * the lifecycle transition so subscribers see the change.
    */
   async checkOnLaunch(): Promise<void> {
     await this.ensureHydrated();
     if (!this.hasStoredLicense()) return;
-    try { await this.validate(); } catch { /* transient — keep last-known-good, bounded by maxOfflineDays */ }
+    const prevState = this.state();
+    const prevExpiry = this.getNum(ACCOUNT.LICENSE_EXPIRES_AT);
+    try {
+      await this.validate();
+    } catch (e) {
+      if (isDefinitiveLaunchDeny(e)) {
+        await this.del(ACCOUNT.LEASE);
+        this.emitLifecycle(prevState, prevExpiry);
+      }
+      // else: transient — keep last-known-good, bounded by maxOfflineDays.
+    }
   }
 
   get upgradeUrl(): string | null {
@@ -404,7 +429,11 @@ export class Keylight {
   async reportFreeTier(): Promise<void> { await this.reportKeylessState("free_tier"); }
 
   protected verifyOrReject(lease: Lease) {
-    if (!isTrusted(this.verify(lease))) throw new LeaseVerificationFailed();
+    const r = this.verify(lease);
+    // Carry kidKnown so callers (checkOnLaunch) can tell tampering (known kid, bad
+    // signature) from a possible signing-key rotation (unknown kid). isTrusted() is
+    // kidKnown && signatureValid, so a thrown error always means "not both".
+    if (!isTrusted(r)) throw new LeaseVerificationFailed(r.kidKnown);
   }
   protected async saveExpiry(exp: number | null) {
     if (exp === null) await this.del(ACCOUNT.LICENSE_EXPIRES_AT);
@@ -412,6 +441,24 @@ export class Keylight {
   }
   protected async touchLastSeen() { await this.setStr(ACCOUNT.LAST_SEEN, String(nowSecs())); }
   protected async touchValidatedOnline() { await this.setStr(ACCOUNT.LAST_VALIDATED_ONLINE, String(nowSecs())); }
+}
+
+/**
+ * Whether an error thrown out of `validate()` on the launch path is a DEFINITIVE deny
+ * (drop the cached lease) rather than a genuinely transient failure (keep last-known-good).
+ *
+ *  - `InvalidResponse` (malformed body) ⇒ deny: the trusted worker never sends garbage.
+ *  - `LeaseVerificationFailed` with a KNOWN kid ⇒ deny: a trusted key signed a bad payload
+ *    ⇒ tampering/forgery.
+ *  - `LeaseVerificationFailed` with an UNKNOWN kid ⇒ NOT a deny: indistinguishable from a
+ *    legitimate signing-key rotation; keep access so a rotation can't lock out users.
+ *  - Everything else (NetworkError / TimeoutError / ServerError / RateLimited / …) ⇒ NOT a
+ *    deny: transient, keep last-known-good.
+ */
+function isDefinitiveLaunchDeny(e: unknown): boolean {
+  if (e instanceof InvalidResponse) return true;
+  if (e instanceof LeaseVerificationFailed) return e.kidKnown;
+  return false;
 }
 
 // Short opaque correlation id for the X-Keylight-Request-Id header.

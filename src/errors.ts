@@ -28,7 +28,18 @@ export class RateLimited extends KeylightError {
 export class TimeoutError extends KeylightError { constructor() { super("timeout", "Request timed out"); this.name = "TimeoutError"; } }
 export class NetworkError extends KeylightError { constructor(m: string) { super("network_failure", m); this.name = "NetworkError"; } }
 export class InvalidResponse extends KeylightError { constructor() { super("invalid_response", "Invalid response"); this.name = "InvalidResponse"; } }
-export class LeaseVerificationFailed extends KeylightError { constructor() { super("lease_verification_failed", "Lease verification failed"); this.name = "LeaseVerificationFailed"; } }
+export class LeaseVerificationFailed extends KeylightError {
+  /**
+   * @param kidKnown Whether the lease's signing-key id (`kid`) is one we trust.
+   *   `true` + a failed signature ⇒ tampering/forgery (a trusted key produced a bad
+   *   signature over this payload) ⇒ the launch path treats it as a definitive deny.
+   *   `false` ⇒ an unrecognised kid, indistinguishable from a legitimate signing-key
+   *   rotation ⇒ the launch path treats it as transient (keeps last-known-good) so a
+   *   rotation can't lock out paying users. Defaults to `false` (fail-open on the
+   *   distinction) for backward-compatible construction.
+   */
+  constructor(public readonly kidKnown = false) { super("lease_verification_failed", "Lease verification failed"); this.name = "LeaseVerificationFailed"; }
+}
 export class StorageError extends KeylightError { constructor(m: string) { super("storage", m); this.name = "StorageError"; } }
 export class NoStoredLicense extends KeylightError { constructor() { super("no_stored_license", "No stored license"); this.name = "NoStoredLicense"; } }
 export class ConfigError extends KeylightError { constructor(m: string) { super("config", m); this.name = "ConfigError"; } }

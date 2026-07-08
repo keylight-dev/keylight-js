@@ -35,6 +35,22 @@ async function seededLicensedStore(agoSecs: number): Promise<MemoryStore> {
   return store;
 }
 
+// A lease with a KNOWN kid (k1) whose signature no longer matches its payload — i.e.
+// tampering/forgery. Signed correctly, then a field is mutated so leasePayload() differs
+// from the signed message: verify() => { kidKnown: true, signatureValid: false }.
+function tamperedKnownKidLease(): Lease {
+  const l = signedLease("active", nowSecs() + 30 * 86400);
+  return { ...l, entitlements: [...l.entitlements, "smuggled"] }; // payload changes, kid stays k1
+}
+
+// A lease signed under a kid we do NOT trust yet — indistinguishable at the client from a
+// legitimate server-side signing-key rotation. verify() short-circuits to
+// { kidKnown: false, signatureValid: false } because the kid isn't in TRUSTED_KEYS.
+function unknownKidLease(): Lease {
+  const l = signedLease("active", nowSecs() + 30 * 86400);
+  return { ...l, kid: "rotated-key-2" };
+}
+
 function countingTransport(status: number, body: string) {
   let calls = 0;
   const t: Transport = {
@@ -101,4 +117,64 @@ test("(d) maxOfflineDays: null disables the cap -- never denies for offline age"
   expect(kl.state()).toEqual({ kind: "Licensed" });
   expect(kl.isEntitled).toBe(true);
   expect(kl.cachedLease).not.toBeNull();
+});
+
+test("(e) a served lease with a KNOWN kid but bad signature (tampering) denies on launch, not keep-access", async () => {
+  const store = await seededLicensedStore(60); // starts Licensed off a good cached lease
+  // valid:true but the served lease fails cryptographic verification -> validate() throws
+  // LeaseVerificationFailed BEFORE its own store reconciliation. A forged lease must NOT
+  // silently keep the user entitled off the stale cached lease.
+  const body = JSON.stringify({ valid: true, license_expires_at: nowSecs() + 30 * 86400, lease: tamperedKnownKidLease() });
+  const kl = new Keylight({ tenantId: "t", productId: "p", trustedKeys: TRUSTED_KEYS, transport: countingTransport(200, body).t, store });
+  await kl.load();
+  expect(kl.state()).toEqual({ kind: "Licensed" }); // sanity: starts licensed
+
+  await expect(kl.checkOnLaunch()).resolves.toBeUndefined();
+
+  expect(kl.state(), "tampered lease must deny, not keep last-known-good").not.toEqual({ kind: "Licensed" });
+  expect(kl.isEntitled).toBe(false);
+  expect(kl.cachedLease).toBeNull();
+});
+
+test("(f) a malformed response body (InvalidResponse) denies on launch", async () => {
+  const store = await seededLicensedStore(60); // starts Licensed
+  // 200 with a non-JSON body -> validate() throws InvalidResponse. The trusted worker has
+  // no legitimate reason to send garbage; treat it as a definitive deny, not a blip.
+  const kl = new Keylight({ tenantId: "t", productId: "p", trustedKeys: TRUSTED_KEYS, transport: countingTransport(200, "not json at all").t, store });
+  await kl.load();
+  expect(kl.state()).toEqual({ kind: "Licensed" });
+
+  await expect(kl.checkOnLaunch()).resolves.toBeUndefined();
+
+  expect(kl.state(), "malformed response must deny").not.toEqual({ kind: "Licensed" });
+  expect(kl.isEntitled).toBe(false);
+});
+
+test("(g) REGRESSION: a genuine NetworkError on launch keeps last-known-good within the offline cap", async () => {
+  const store = await seededLicensedStore(2 * 86400); // 2 days ago, well within the 15-day cap
+  const kl = new Keylight({ tenantId: "t", productId: "p", trustedKeys: TRUSTED_KEYS, transport: terminalFailureTransport, store });
+  await kl.load();
+
+  await expect(kl.checkOnLaunch()).resolves.toBeUndefined();
+
+  expect(kl.state(), "network failure is transient -> keep access").toEqual({ kind: "Licensed" });
+  expect(kl.isEntitled).toBe(true);
+  expect(kl.cachedLease).not.toBeNull();
+});
+
+test("(h) REGRESSION: an UNKNOWN-kid verification failure (possible key rotation) keeps access, must not lock out", async () => {
+  const store = await seededLicensedStore(60); // starts Licensed off a good, k1-signed cached lease
+  // valid:true but the served lease is signed under a kid we don't trust yet. This is
+  // indistinguishable from a legitimate signing-key rotation, so it must be treated as
+  // transient (keep last-known-good) rather than as tampering.
+  const body = JSON.stringify({ valid: true, license_expires_at: nowSecs() + 30 * 86400, lease: unknownKidLease() });
+  const kl = new Keylight({ tenantId: "t", productId: "p", trustedKeys: TRUSTED_KEYS, transport: countingTransport(200, body).t, store });
+  await kl.load();
+  expect(kl.state()).toEqual({ kind: "Licensed" });
+
+  await expect(kl.checkOnLaunch()).resolves.toBeUndefined();
+
+  expect(kl.state(), "unknown-kid rotation must not lock out paying users").toEqual({ kind: "Licensed" });
+  expect(kl.isEntitled).toBe(true);
+  expect(kl.cachedLease, "the good k1-signed cached lease survives untouched").not.toBeNull();
 });
