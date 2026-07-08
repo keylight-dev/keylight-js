@@ -167,7 +167,15 @@ export class Keylight {
     if (resp.lease) this.verifyOrReject(resp.lease);
 
     if (!resp.valid) {
-      if (resp.lease) { await this.setStr(ACCOUNT.LEASE, JSON.stringify(resp.lease)); await this.saveExpiry(resp.license_expires_at ?? null); }
+      // Definitive rejection: persist whatever lease the server sent (e.g. "expired"/
+      // "fallback"), or clear the cached one when it sent none at all — the real worker's
+      // revoked/instance-not-active responses are `{error: "..."}` with no `lease` field,
+      // so leaving the old (still "active") lease in place would let state() keep
+      // reporting Licensed off stale data. Either way this is a definitive deny, not a
+      // transient failure, so the store must always reflect it.
+      if (resp.lease) await this.setStr(ACCOUNT.LEASE, JSON.stringify(resp.lease));
+      else await this.del(ACCOUNT.LEASE);
+      await this.saveExpiry(resp.license_expires_at ?? null);
       this.emitLifecycle(prevState, prevExpiry);
       return { valid: false, lease: resp.lease ?? null, licenseExpiresAt: resp.license_expires_at ?? null, error: resp.error ?? null };
     }
@@ -213,16 +221,26 @@ export class Keylight {
   }
 
   /**
+   * True once the license has gone longer than `maxOfflineDays` without a successful
+   * online validation (`maxOfflineDays === null` disables the cap). Shared by
+   * `cachedLease` and `state()` so a validated license can't run offline forever —
+   * before this gate existed, `state()` bypassed the cap entirely (it read the raw
+   * lease directly), so only `cachedLease`/`hasEntitlement` were bounded.
+   */
+  private offlineCapExceeded(): boolean {
+    if (this.cfg.maxOfflineDays == null) return false;
+    const last = this.getNum(ACCOUNT.LAST_VALIDATED_ONLINE);
+    if (last === null) return true;
+    return nowSecs() - last > this.cfg.maxOfflineDays * 86400;
+  }
+
+  /**
    * The usable cached lease, or null. Gated exactly like Rust `cached_lease()`:
    * enforces `maxOfflineDays` (since last online validation), then requires a
    * signature-trusted, unexpired lease whose status is not "expired".
    */
   get cachedLease(): Lease | null {
-    if (this.cfg.maxOfflineDays != null) {
-      const last = this.getNum(ACCOUNT.LAST_VALIDATED_ONLINE);
-      if (last === null) return null;
-      if (nowSecs() - last > this.cfg.maxOfflineDays * 86400) return null;
-    }
+    if (this.offlineCapExceeded()) return null;
     const lease = this.rawLease();
     if (!lease) return null;
     const r = this.verify(lease);
@@ -239,7 +257,10 @@ export class Keylight {
   }
 
   state(): LicenseState {
-    const lease = this.rawLease();
+    // Gated by the same maxOfflineDays cap as cachedLease() (G2): past the cap, a
+    // signed-and-current lease is treated as absent so state() denies rather than
+    // trusting a once-validated license forever offline.
+    const lease = this.offlineCapExceeded() ? null : this.rawLease();
     let status: string | null = null, current = false;
     if (lease) { const r = this.verify(lease); status = isTrusted(r) ? lease.status : null; current = !r.expired; }
     return resolveState(status, current, this.hasStoredLicense(), this.checkTrial(), this.cfg.freeTierEnabled);
@@ -260,9 +281,23 @@ export class Keylight {
     return this.validate();
   }
 
+  /**
+   * Always perform a server `validate` round-trip on launch — no staleness gating —
+   * so a dashboard revoke or expiry lands on the very next launch instead of lagging
+   * behind `refreshIfNeeded`'s debounce (5m) / stale (6h) / near-expiry (24h) windows
+   * (G1). `refreshIfNeeded`'s cadence is unchanged and still governs long-running
+   * hosts between launches.
+   *
+   * A definitive rejection is reconciled into the store by `validate()` itself (see
+   * its `!resp.valid` branch), so `state()` denies immediately after this returns.
+   * A thrown (transient: network/timeout/5xx) error is swallowed here — the host
+   * keeps running on the last-known-good cached lease, still subject to
+   * `maxOfflineDays` via `state()`/`cachedLease` (G4).
+   */
   async checkOnLaunch(): Promise<void> {
     await this.ensureHydrated();
-    if (this.hasStoredLicense()) await this.refreshIfNeeded();
+    if (!this.hasStoredLicense()) return;
+    try { await this.validate(); } catch { /* transient — keep last-known-good, bounded by maxOfflineDays */ }
   }
 
   get upgradeUrl(): string | null {

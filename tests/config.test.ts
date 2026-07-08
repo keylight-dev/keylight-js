@@ -9,6 +9,12 @@ test("defaults base url and trial duration (Rust parity)", () => {
   expect(normalizeConfig({ tenantId: "t", productId: "p", trialDurationDays: 7 }).trialDurationDays).toBe(7);
 });
 
+test("maxOfflineDays defaults to 15; explicit number is kept; explicit null disables the cap", () => {
+  expect(normalizeConfig({ tenantId: "t", productId: "p" }).maxOfflineDays).toBe(15);
+  expect(normalizeConfig({ tenantId: "t", productId: "p", maxOfflineDays: 7 }).maxOfflineDays).toBe(7);
+  expect(normalizeConfig({ tenantId: "t", productId: "p", maxOfflineDays: null }).maxOfflineDays).toBeNull();
+});
+
 test("validateKeyFormat enforces prefix + charset", () => {
   expect(validateKeyFormat("ABCD-1234", undefined)).toBe(true);
   expect(validateKeyFormat("ABCD_1234", undefined)).toBe(false);

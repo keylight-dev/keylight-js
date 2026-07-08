@@ -7,7 +7,10 @@ export interface KeylightOptions {
   sdkKey?: string;
   baseUrl?: string;
   trustedKeys?: Record<string, string>; // kid -> raw ed25519 pub (base64)
-  maxOfflineDays?: number;
+  /** Days a license may run offline (since the last successful online validation)
+   *  before it is treated as non-entitled. Defaults to 15. Pass `null` explicitly
+   *  to disable the cap (uncapped offline use, e.g. air-gapped consumers). */
+  maxOfflineDays?: number | null;
   trialDurationDays?: number;
   freeTierEnabled?: boolean;
   appVersion?: string;
@@ -23,7 +26,9 @@ export interface KeylightConfig {
   sdkKey?: string;
   baseUrl: string;
   trustedKeys: Record<string, string>;
-  maxOfflineDays?: number;
+  /** `null` means the offline cap is disabled. Always defined after normalization
+   *  (defaults to 15 when the caller omits it). */
+  maxOfflineDays: number | null;
   trialDurationDays: number;
   freeTierEnabled: boolean;
   appVersion?: string;
@@ -38,7 +43,8 @@ export function normalizeConfig(o: KeylightOptions): KeylightConfig {
     sdkKey: o.sdkKey,
     baseUrl: o.baseUrl ?? "https://api.keylight.dev",
     trustedKeys: o.trustedKeys ?? {},
-    maxOfflineDays: o.maxOfflineDays,
+    // Default 15 days (cross-SDK parity); explicit `null` disables the cap.
+    maxOfflineDays: o.maxOfflineDays === undefined ? 15 : o.maxOfflineDays,
     trialDurationDays: o.trialDurationDays ?? 14, // Rust builder default; harmless until startTrial() is called
     freeTierEnabled: o.freeTierEnabled ?? false,
     appVersion: o.appVersion,
