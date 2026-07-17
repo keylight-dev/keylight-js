@@ -8,7 +8,7 @@ export { parseKeyset, fetchKeyset } from "./keyset.js";
 export type { Keyset } from "./keyset.js";
 export { FetchTransport } from "./transport.js";
 export type { Transport, TransportOutcome, Header } from "./transport.js";
-export { MemoryStore, LocalStorageStore, FsStore, makeDefaultStore, ACCOUNT } from "./store.js";
+export { MemoryStore, LocalStorageStore, FsStore, IndexedDbStore, CookieStore, makeDefaultStore, ACCOUNT } from "./store.js";
 export type { LicenseStore } from "./store.js";
 export { resolveState, lifecycleEvent } from "./state.js";
 export type { LicenseState, TrialStatus, KeylessState, LicenseLifecycleEvent } from "./state.js";

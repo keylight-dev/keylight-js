@@ -19,8 +19,18 @@ export interface KeylightOptions {
   transport?: Transport;    // injectable
   store?: LicenseStore;     // injectable
   /** Test seam for the OS/hardware machine id used to derive `machine_hash` on the
-   *  keyless heartbeat. Not part of the normalized config — defaults to `readMachineId`. */
+   *  keyless heartbeat, activate, and validate. Not part of the normalized config —
+   *  defaults to `readMachineId`. */
   machineId?: () => string | null | Promise<string | null>;
+  /** App-supplied stable identifier used to derive `machine_hash` when no OS/hardware
+   *  machine id is available (browser/Deno/Workers). Provide a value that is stable for
+   *  the device/user — a user account id is typical. It is never sent raw: it is hashed
+   *  with the same tenant/product-scoped material as the hardware machine id. A hardware
+   *  machine id (Node/Bun) always takes precedence. A null/empty value (or function
+   *  result) behaves as if unset — `machine_hash` is omitted. NOTE: changing the supplied
+   *  value changes the device identity server-side (it counts as a new device). Not part
+   *  of the normalized config. */
+  stableDeviceId?: string | (() => string | null | Promise<string | null>);
 }
 
 export interface KeylightConfig {

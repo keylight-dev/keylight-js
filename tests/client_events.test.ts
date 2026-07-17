@@ -95,3 +95,136 @@ test("reportKeylessState omits machine_hash when no machine id is available", as
   const body = JSON.parse(captured as unknown as string);
   expect("machine_hash" in body).toBe(false);
 });
+
+test("stableDeviceId derives machine_hash on keyless, activate, and validate when no machine id", async () => {
+  const bodies: string[] = [];
+  const t: Transport = {
+    async postJson(_url, _headers, body) { bodies.push(body); return { kind: "response", status: 200, body: `{"activated":true,"valid":true,"instance_id":"srv-1"}` }; },
+    async get() { return { kind: "terminal", error: "x" }; },
+  };
+  const kl = new Keylight({
+    tenantId: "testco",
+    productId: "testapp",
+    transport: t,
+    store: new MemoryStore(),
+    machineId: () => null,
+    stableDeviceId: "user-42",
+  });
+  await kl.load();
+  await kl.reportKeylessState("free_tier");
+  await kl.activate("ABCD-1234");
+  await kl.validate();
+  expect(bodies).toHaveLength(3);
+  for (const raw of bodies) {
+    // sha256("keylight-keyless-machine-v1|testco|testapp|user-42") — same material as hardware ids.
+    expect(JSON.parse(raw).machine_hash).toBe("1ef4ddc83063f31e15355544360699870411ca9f53b7b0d0e94280e2b64d07f9");
+  }
+});
+
+test("stableDeviceId accepts an async function", async () => {
+  let captured: string | null = null;
+  const t: Transport = {
+    async postJson(_url, _headers, body) { captured = body; return { kind: "response", status: 200, body: "{}" }; },
+    async get() { return { kind: "terminal", error: "x" }; },
+  };
+  const kl = new Keylight({
+    tenantId: "testco", productId: "testapp", transport: t, store: new MemoryStore(),
+    machineId: () => null,
+    stableDeviceId: async () => "user-42",
+  });
+  await kl.load();
+  await kl.reportKeylessState("free_tier");
+  const body = JSON.parse(captured as unknown as string);
+  expect(body.machine_hash).toBe("1ef4ddc83063f31e15355544360699870411ca9f53b7b0d0e94280e2b64d07f9");
+});
+
+test("hardware machine id takes precedence over stableDeviceId", async () => {
+  let captured: string | null = null;
+  const t: Transport = {
+    async postJson(_url, _headers, body) { captured = body; return { kind: "response", status: 200, body: "{}" }; },
+    async get() { return { kind: "terminal", error: "x" }; },
+  };
+  const kl = new Keylight({
+    tenantId: "testco", productId: "testapp", transport: t, store: new MemoryStore(),
+    machineId: () => "hardware-1",
+    stableDeviceId: "user-42",
+  });
+  await kl.load();
+  await kl.reportKeylessState("free_tier");
+  const body = JSON.parse(captured as unknown as string);
+  // Pinned hardware vector — unchanged by the presence of stableDeviceId.
+  expect(body.machine_hash).toBe("8e8871112f28cabda180ada131d0b4f4f07c72fb47c5d884edbe32812885b22a");
+});
+
+test("null/empty stableDeviceId behaves as unset — machine_hash omitted", async () => {
+  for (const stable of [() => null, () => "", ""] as const) {
+    const bodies: string[] = [];
+    const t: Transport = {
+      async postJson(_url, _headers, body) { bodies.push(body); return { kind: "response", status: 200, body: `{"activated":true,"valid":true,"instance_id":"srv-1"}` }; },
+      async get() { return { kind: "terminal", error: "x" }; },
+    };
+    const kl = new Keylight({
+      tenantId: "testco", productId: "testapp", transport: t, store: new MemoryStore(),
+      machineId: () => null,
+      stableDeviceId: stable,
+    });
+    await kl.load();
+    await kl.reportKeylessState("free_tier");
+    await kl.activate("ABCD-1234");
+    await kl.validate();
+    expect(bodies).toHaveLength(3);
+    for (const raw of bodies) expect("machine_hash" in JSON.parse(raw)).toBe(false);
+  }
+});
+
+test("reportKeylessState returns true on success and true on the debounced no-op", async () => {
+  const kl = new Keylight({ tenantId: "t", productId: "p", transport: ok, store: new MemoryStore(), machineId: () => null });
+  await kl.load();
+  expect(await kl.reportKeylessState("free_tier")).toBe(true); // sent, 200
+  expect(await kl.reportKeylessState("free_tier")).toBe(true); // debounced, already reported
+});
+
+test("reportKeylessState returns false on failure and does NOT persist the debounce state", async () => {
+  const bad: Transport = { async postJson() { return { kind: "response", status: 400, body: "{}" }; }, async get() { return { kind: "terminal", error: "x" }; } };
+  const store = new MemoryStore();
+  const kl = new Keylight({ tenantId: "t", productId: "p", transport: bad, store, machineId: () => null });
+  await kl.load();
+  expect(await kl.reportKeylessState("free_tier")).toBe(false);
+  expect(await store.get(ACCOUNT.KEYLESS_LAST_STATE)).toBeNull();
+  expect(await store.get(ACCOUNT.LAST_KEYLESS_PING_AT)).toBeNull();
+});
+
+test("reportFreeTier surfaces the beacon result", async () => {
+  const bad: Transport = { async postJson() { return { kind: "terminal", error: "offline" }; }, async get() { return { kind: "terminal", error: "x" }; } };
+  const kl = new Keylight({ tenantId: "t", productId: "p", transport: bad, store: new MemoryStore(), machineId: () => null });
+  await kl.load();
+  expect(await kl.reportFreeTier()).toBe(false);
+});
+
+test("activate and validate include machine_hash when a machine id is available (cross-SDK vector)", async () => {
+  const bodies: string[] = [];
+  const t: Transport = {
+    async postJson(_url, _headers, body) { bodies.push(body); return { kind: "response", status: 200, body: `{"activated":true,"valid":true,"instance_id":"srv-1"}` }; },
+    async get() { return { kind: "terminal", error: "x" }; },
+  };
+  const kl = new Keylight({ tenantId: "testco", productId: "testapp", transport: t, store: new MemoryStore(), machineId: () => "hardware-1" });
+  await kl.activate("ABCD-1234");
+  await kl.validate();
+  expect(bodies).toHaveLength(2);
+  for (const raw of bodies) {
+    // Same pinned vector as the keyless beacon test — hash material unchanged.
+    expect(JSON.parse(raw).machine_hash).toBe("8e8871112f28cabda180ada131d0b4f4f07c72fb47c5d884edbe32812885b22a");
+  }
+});
+
+test("activate and validate omit machine_hash when no machine id is available", async () => {
+  const bodies: string[] = [];
+  const t: Transport = {
+    async postJson(_url, _headers, body) { bodies.push(body); return { kind: "response", status: 200, body: `{"activated":true,"valid":true,"instance_id":"srv-1"}` }; },
+    async get() { return { kind: "terminal", error: "x" }; },
+  };
+  const kl = new Keylight({ tenantId: "testco", productId: "testapp", transport: t, store: new MemoryStore(), machineId: () => null });
+  await kl.activate("ABCD-1234");
+  await kl.validate();
+  for (const raw of bodies) expect("machine_hash" in JSON.parse(raw)).toBe(false);
+});

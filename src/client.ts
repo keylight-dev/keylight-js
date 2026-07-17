@@ -42,6 +42,7 @@ export class Keylight {
   private hydrated: Promise<void> | null = null;
   private readonly storeOption?: LicenseStore;
   private readonly machineId: () => string | null | Promise<string | null>;
+  private readonly stableDeviceId?: string | (() => string | null | Promise<string | null>);
 
   constructor(options: KeylightOptions) {
     this.cfg = normalizeConfig(options);
@@ -49,6 +50,7 @@ export class Keylight {
     this.storeOption = options.store;
     this.store = options.store ?? new MemoryStore(); // replaced during hydrate() if no store given
     this.machineId = options.machineId ?? readMachineId;
+    this.stableDeviceId = options.stableDeviceId;
   }
 
   /** Hydrate the in-memory cache from the (possibly async) store. Idempotent. */
@@ -131,6 +133,8 @@ export class Keylight {
     const map: Record<string, unknown> = { license_key: key, instance_name: machineName() };
     const ft = this.getStr(ACCOUNT.FREE_TIER_INSTANCE_ID);
     if (ft) map.free_tier_instance_id = ft;
+    const mh = await this.currentMachineHash();
+    if (mh) map.machine_hash = mh;
 
     let res: { status: number; body: string };
     try {
@@ -161,8 +165,11 @@ export class Keylight {
     const prevState = this.state();
     const prevExpiry = this.getNum(ACCOUNT.LICENSE_EXPIRES_AT);
 
+    const map: Record<string, unknown> = { license_key: key, instance_id: instance };
+    const mh = await this.currentMachineHash();
+    if (mh) map.machine_hash = mh;
     let res: { status: number; body: string };
-    try { res = await this.post("validate", this.bodyWithTelemetry({ license_key: key, instance_id: instance }), [422]); }
+    try { res = await this.post("validate", this.bodyWithTelemetry(map), [422]); }
     catch (e) { if (e instanceof ClientError) return { valid: false, lease: null, licenseExpiresAt: null, error: e.message || `Validation failed (HTTP ${e.status})` }; throw e; }
 
     let resp: ValidateResp;
@@ -386,21 +393,42 @@ export class Keylight {
     return id;
   }
 
-  async reportKeylessState(state: KeylessState): Promise<void> {
+  /** Tenant/product-scoped machine hash for the current host, or null when neither an
+   *  OS machine id (browser/Deno/Workers) nor an app-supplied `stableDeviceId` is
+   *  available. The hardware machine id wins over `stableDeviceId`. Shared by activate/
+   *  validate/keyless so all three send the same cross-SDK `machine_hash`. */
+  private async currentMachineHash(): Promise<string | null> {
+    const hw = await this.machineId();
+    const stable = hw || await this.resolveStableDeviceId();
+    return stable ? machineHash(this.cfg.tenantId, this.cfg.productId, stable) : null;
+  }
+  private async resolveStableDeviceId(): Promise<string | null> {
+    const v = typeof this.stableDeviceId === "function" ? await this.stableDeviceId() : this.stableDeviceId;
+    return v ? v : null; // null/empty behaves as unset
+  }
+
+  /**
+   * Report the keyless/free-tier beacon. Never throws; returns `true` when the state
+   * is considered reported (a 200 from the server, or a still-fresh <24h debounce for
+   * an unchanged state) and `false` when the send failed. The debounce state
+   * (last state + ping time) is persisted only on a successful 200.
+   */
+  async reportKeylessState(state: KeylessState): Promise<boolean> {
     await this.ensureHydrated();
     const lastState = this.getStr(ACCOUNT.KEYLESS_LAST_STATE);
     const lastPing = this.getNum(ACCOUNT.LAST_KEYLESS_PING_AT);
     const changed = lastState !== state;
     const within = lastPing !== null && nowSecs() - lastPing < 86400;
-    if (!changed && within) return;
+    if (!changed && within) return true; // already reported within the debounce window
     const instance = await this.freeTierInstanceId();
     const map: Record<string, unknown> = { instance_id: instance, state };
-    const hw = await this.machineId();
-    if (hw) map.machine_hash = machineHash(this.cfg.tenantId, this.cfg.productId, hw);
+    const mh = await this.currentMachineHash();
+    if (mh) map.machine_hash = mh;
     const body = this.bodyWithTelemetry(map);
     const out = await this.post("keyless", body).catch(() => null);
     // post() returns only on 200; on success record state + ping (parity with Rust).
     if (out) { await this.setStr(ACCOUNT.KEYLESS_LAST_STATE, state); await this.setStr(ACCOUNT.LAST_KEYLESS_PING_AT, String(nowSecs())); }
+    return out !== null;
   }
 
   // --- Swift-parity convenience aliases (thin wrappers over the methods above) ---
@@ -431,8 +459,9 @@ export class Keylight {
     return this.getStr(ACCOUNT.FREE_TIER_INSTANCE_ID);
   }
 
-  /** Report the anonymous free-tier beacon. Mirrors Swift `reportFreeTier()`. */
-  async reportFreeTier(): Promise<void> { await this.reportKeylessState("free_tier"); }
+  /** Report the anonymous free-tier beacon. Mirrors Swift `reportFreeTier()`.
+   *  Never throws; returns whether the beacon is reported (see reportKeylessState). */
+  async reportFreeTier(): Promise<boolean> { return this.reportKeylessState("free_tier"); }
 
   protected verifyOrReject(lease: Lease) {
     const r = this.verify(lease);
