@@ -1,11 +1,16 @@
 {
   "name": "@keylight-dev/js",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Official JavaScript/TypeScript SDK for Keylight licensing.",
   "type": "module",
-  "repository": { "type": "git", "url": "git+https://github.com/keylight-dev/keylight-js.git" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/keylight-dev/keylight-js.git"
+  },
   "homepage": "https://docs.keylight.dev/js-sdk/install/",
-  "bugs": { "url": "https://github.com/keylight-dev/keylight-js/issues" },
+  "bugs": {
+    "url": "https://github.com/keylight-dev/keylight-js/issues"
+  },
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",

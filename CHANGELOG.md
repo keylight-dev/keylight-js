@@ -5,6 +5,36 @@ All notable changes to the Keylight JavaScript/TypeScript SDK are documented her
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-07-17
+
+### Added
+
+- **`stableDeviceId` option for browser-like environments.** When no
+  OS/hardware machine id is available (browser, Deno, Workers), a host app can
+  now supply its own stable identifier — typically a user/account id — as a
+  string or (async) function. It is never sent raw: it is hashed with the same
+  tenant/product-scoped material as the hardware machine id, and a hardware id
+  (Node/Bun) always takes precedence. A null/empty value behaves as unset.
+  Note: changing the supplied value changes the device identity server-side.
+- **`machine_hash` on activate and validate.** The same cross-SDK device hash
+  the keyless beacon sends now accompanies `activate` and `validate`, so a
+  device that converts from keyless to licensed (or keeps validating) counts
+  as **one** daily-active device instead of two.
+- **Durable browser storage fallbacks: `IndexedDbStore` and `CookieStore`.**
+  `makeDefaultStore` now layers localStorage → fs (Node/Bun) → IndexedDB
+  (probed with a real open) → cookies (probed with a write round-trip) →
+  memory, so one browser profile keeps one stable `free_tier_instance_id`
+  across page loads even where localStorage is unavailable (sandboxed iframes,
+  some privacy modes). Both stores are also exported for explicit use.
+
+### Changed
+
+- **`reportKeylessState` (and `reportFreeTier`) now return a boolean** — `true`
+  when the state is considered reported (HTTP 200, or a still-fresh <24h
+  debounce for an unchanged state), `false` when the send failed. They still
+  never throw, and the debounce state is persisted only on a successful 200,
+  so a transient failure no longer suppresses re-sends for a day.
+
 ## [0.1.3] - 2026-07-09
 
 ### Added
@@ -36,6 +66,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   trials, free-tier/keyless beacon, entitlements, and the cross-SDK conformance
   vectors — full parity with the Swift and Rust SDKs.
 
+[0.1.4]: https://github.com/keylight-dev/keylight-js/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/keylight-dev/keylight-js/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/keylight-dev/keylight-js/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/keylight-dev/keylight-js/compare/v0.1.0...v0.1.1
