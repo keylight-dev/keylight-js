@@ -35,7 +35,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:live": "KEYLIGHT_LIVE=1 vitest run tests/live_integration.test.ts",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm test && npm run build"
   },
   "dependencies": {
     "@noble/ed25519": "^2.1.0",
