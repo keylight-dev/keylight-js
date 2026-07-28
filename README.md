@@ -141,7 +141,8 @@ For a browser `<script>` tag, the IIFE bundle exposes the namespace as `window.K
 | `validate() → ValidationResult` | Re-checks the stored license online. Decodes hard-expiry (`422`) responses and preserves fallback/expired leases so state can resolve. |
 | `deactivate()` | Releases the seat and clears local license state (even if the network call fails). Call on uninstall or device switch. |
 | `refreshIfNeeded() → ValidationResult \| null` | Validates only if due (debounce 5 min, stale 6 h, or within 24 h of expiry). Safe to call often. |
-| `checkOnLaunch()` | Convenience: refresh if a license is stored, else no-op. |
+| `checkOnLaunch()` | Always validates when a license is stored, else no-op. Never throws: a definitive rejection downgrades, a network blip keeps last-known-good. |
+| `activeRevalidate()` | Same forced check for active use (focus / popover open), debounced 60 s in memory. Call it so a revoke lands in a long-running app without a relaunch. |
 
 ## License States
 
@@ -219,8 +220,9 @@ if (r.expired) throw new Error("Lease expired");
 There are **no background timers**. The host drives refresh on launch and on meaningful events:
 
 ```ts
-await kl.checkOnLaunch();     // validate if due, on startup
-await kl.refreshIfNeeded();   // call again on focus / purchase / resume
+await kl.checkOnLaunch();     // always validate, on startup
+await kl.activeRevalidate();  // on focus / popover open — forced, debounced 60 s
+await kl.refreshIfNeeded();   // cheap catch-all after purchase / resume
 ```
 
 Trials and free tier are local and offline-first:

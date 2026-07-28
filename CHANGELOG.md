@@ -5,6 +5,20 @@ All notable changes to the Keylight JavaScript/TypeScript SDK are documented her
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`activeRevalidate()` — forced, 60 s-debounced revalidation for active use.**
+  Call it when the user brings the app forward (window focus, popover open,
+  route change) so a dashboard revoke lands within a minute instead of waiting
+  for the next launch. It bypasses `refreshIfNeeded`'s staleness gates
+  (5 min / 6 h / 24 h) and shares `checkOnLaunch`'s reconciliation: a definitive
+  server rejection downgrades immediately, a network blip never downgrades a
+  live session, and it never throws. The debounce is held in memory only, so a
+  process restart or page reload always revalidates. Mirrors the Swift SDK's
+  `activeRevalidate()`.
+
 ## [0.1.4] - 2026-07-17
 
 ### Added

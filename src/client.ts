@@ -33,6 +33,9 @@ interface ValidateResp { valid: boolean; license_expires_at?: number | null; lea
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const nowSecs = () => Math.floor(Date.now() / 1000);
 
+/** Debounce window for `activeRevalidate` (parity with Swift `activeRevalidateDebounce`). */
+const ACTIVE_REVALIDATE_DEBOUNCE_MS = 60_000;
+
 export class Keylight {
   private readonly cfg: KeylightConfig;
   private store: LicenseStore;
@@ -43,6 +46,9 @@ export class Keylight {
   private readonly storeOption?: LicenseStore;
   private readonly machineId: () => string | null | Promise<string | null>;
   private readonly stableDeviceId?: string | (() => string | null | Promise<string | null>);
+  /** `activeRevalidate` debounce clock (ms epoch). IN MEMORY BY DESIGN — never written
+   *  to the store, so a process restart / page reload always revalidates. */
+  private lastActiveRevalidateAt: number | null = null;
 
   constructor(options: KeylightOptions) {
     this.cfg = normalizeConfig(options);
@@ -322,6 +328,16 @@ export class Keylight {
   async checkOnLaunch(): Promise<void> {
     await this.ensureHydrated();
     if (!this.hasStoredLicense()) return;
+    await this.forcedRevalidate();
+  }
+
+  /**
+   * One forced `validate()` round-trip with the deny/keep triage documented on
+   * `checkOnLaunch`. Never throws. Shared by `checkOnLaunch` (launch) and
+   * `activeRevalidate` (foreground/active use) so both paths reconcile identically —
+   * callers are responsible for the hydrate + `hasStoredLicense` guard.
+   */
+  private async forcedRevalidate(): Promise<void> {
     const prevState = this.state();
     const prevExpiry = this.getNum(ACCOUNT.LICENSE_EXPIRES_AT);
     try {
@@ -333,6 +349,40 @@ export class Keylight {
       }
       // else: transient — keep last-known-good, bounded by maxOfflineDays.
     }
+  }
+
+  /**
+   * Force a re-validation on active use (window focus / popover open / route change),
+   * debounced to 60s. Mirrors Swift `activeRevalidate()`.
+   *
+   * This is the CADENCE primitive `refreshIfNeeded` can't be: with multi-day leases a
+   * long-running app would otherwise sit inside `refreshIfNeeded`'s debounce (5m) /
+   * stale (6h) / near-expiry (24h) gates and not notice a dashboard revoke until the
+   * next launch. Call it whenever the user brings the app forward.
+   *
+   * Semantics:
+   *  - No stored license key ⇒ no-op, no network call (and the debounce clock is NOT
+   *    started, matching Swift's guard-then-debounce order).
+   *  - Debounced at 60s, held in memory ONLY (never persisted), so a process restart or
+   *    page reload always revalidates — a reload is exactly when you want a fresh check.
+   *  - Bypasses every staleness gate: it goes straight to `validate()`.
+   *  - A definitive rejection (`valid:false`, e.g. the worker's HTTP 422 revoke) is
+   *    reconciled into the store by `validate()` itself, so `state()` denies as soon as
+   *    this resolves.
+   *  - A transient failure leaves state untouched — never downgrade a live session on a
+   *    network blip. Never throws.
+   *
+   * Deliberately shares `checkOnLaunch`'s deny/keep triage rather than blanket-catching:
+   * a malformed body or a known-kid signature failure (tampering) still denies, while
+   * network/timeout/5xx/429/unknown-kid rotation still keep last-known-good.
+   */
+  async activeRevalidate(): Promise<void> {
+    await this.ensureHydrated();
+    if (!this.hasStoredLicense()) return;
+    const last = this.lastActiveRevalidateAt;
+    if (last !== null && Date.now() - last < ACTIVE_REVALIDATE_DEBOUNCE_MS) return;
+    this.lastActiveRevalidateAt = Date.now();
+    await this.forcedRevalidate();
   }
 
   get upgradeUrl(): string | null {
