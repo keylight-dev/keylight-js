@@ -164,9 +164,15 @@ test("(8) a tampered (known-kid, bad signature) served lease denies -- same tria
   const kl = new Keylight({ tenantId: "t", productId: "p", trustedKeys: TRUSTED_KEYS, transport: t, store });
   await kl.load();
   expect(kl.state()).toEqual({ kind: "Licensed" });
+  const seen: string[] = [];
+  kl.subscribe((s) => seen.push(s.kind));
 
   await expect(kl.activeRevalidate()).resolves.toBeUndefined();
 
   expect(kl.state(), "a forged lease must not keep the user entitled off the stale cached lease").not.toEqual({ kind: "Licensed" });
   expect(kl.isEntitled).toBe(false);
+  // Unlike (7), this deny comes out of forcedRevalidate's catch (validate() threw before
+  // its own reconciliation), so the catch path owns publishing the transition.
+  expect(seen.length, "the throw-path deny must also publish the state change").toBeGreaterThan(0);
+  expect(seen.at(-1)).not.toBe("Licensed");
 });

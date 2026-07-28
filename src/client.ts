@@ -46,9 +46,9 @@ export class Keylight {
   private readonly storeOption?: LicenseStore;
   private readonly machineId: () => string | null | Promise<string | null>;
   private readonly stableDeviceId?: string | (() => string | null | Promise<string | null>);
-  /** `activeRevalidate` debounce clock (ms epoch). IN MEMORY BY DESIGN — never written
-   *  to the store, so a process restart / page reload always revalidates. */
-  private lastActiveRevalidateAt: number | null = null;
+  /** `activeRevalidate` debounce clock (ms epoch; 0 = never run). IN MEMORY BY DESIGN —
+   *  never written to the store, so a process restart / page reload always revalidates. */
+  private lastActiveRevalidateAt = 0;
 
   constructor(options: KeylightOptions) {
     this.cfg = normalizeConfig(options);
@@ -302,7 +302,19 @@ export class Keylight {
    * so a dashboard revoke or expiry lands on the very next launch instead of lagging
    * behind `refreshIfNeeded`'s debounce (5m) / stale (6h) / near-expiry (24h) windows
    * (G1). `refreshIfNeeded`'s cadence is unchanged and still governs long-running
-   * hosts between launches.
+   * hosts between launches. Never throws; see `forcedRevalidate` for the deny/keep
+   * triage it shares with `activeRevalidate`.
+   */
+  async checkOnLaunch(): Promise<void> {
+    await this.ensureHydrated();
+    if (!this.hasStoredLicense()) return;
+    await this.forcedRevalidate();
+  }
+
+  /**
+   * One forced `validate()` round-trip, never throwing. Shared by `checkOnLaunch`
+   * (launch) and `activeRevalidate` (foreground/active use) so both paths reconcile
+   * identically — callers own the hydrate + `hasStoredLicense` guard.
    *
    * A server-side definitive rejection (`!resp.valid`) is reconciled into the store by
    * `validate()` itself, so `state()` denies immediately after this returns.
@@ -325,30 +337,22 @@ export class Keylight {
    * branch — drop the cached lease so `state()` stops reporting Licensed — then fires
    * the lifecycle transition so subscribers see the change.
    */
-  async checkOnLaunch(): Promise<void> {
-    await this.ensureHydrated();
-    if (!this.hasStoredLicense()) return;
-    await this.forcedRevalidate();
-  }
-
-  /**
-   * One forced `validate()` round-trip with the deny/keep triage documented on
-   * `checkOnLaunch`. Never throws. Shared by `checkOnLaunch` (launch) and
-   * `activeRevalidate` (foreground/active use) so both paths reconcile identically —
-   * callers are responsible for the hydrate + `hasStoredLicense` guard.
-   */
   private async forcedRevalidate(): Promise<void> {
-    const prevState = this.state();
-    const prevExpiry = this.getNum(ACCOUNT.LICENSE_EXPIRES_AT);
     try {
       await this.validate();
+      return; // validate() reconciles the store and fires its own lifecycle event.
     } catch (e) {
-      if (isDefinitiveLaunchDeny(e)) {
-        await this.del(ACCOUNT.LEASE);
-        this.emitLifecycle(prevState, prevExpiry);
-      }
-      // else: transient — keep last-known-good, bounded by maxOfflineDays.
+      if (!isDefinitiveLaunchDeny(e)) return; // transient — keep last-known-good, bounded by maxOfflineDays.
     }
+    // Read the "previous" snapshot HERE, not before the call: every path on which
+    // validate() throws does so before it writes anything (post() failure, JSON.parse,
+    // verifyOrReject), so this is still the pre-call state — and skipping it on the
+    // success path avoids a redundant state() (lease JSON.parse + ed25519 verify) on
+    // what is a per-window-focus hot path for activeRevalidate.
+    const prevState = this.state();
+    const prevExpiry = this.getNum(ACCOUNT.LICENSE_EXPIRES_AT);
+    await this.del(ACCOUNT.LEASE);
+    this.emitLifecycle(prevState, prevExpiry);
   }
 
   /**
@@ -372,16 +376,15 @@ export class Keylight {
    *  - A transient failure leaves state untouched — never downgrade a live session on a
    *    network blip. Never throws.
    *
-   * Deliberately shares `checkOnLaunch`'s deny/keep triage rather than blanket-catching:
-   * a malformed body or a known-kid signature failure (tampering) still denies, while
-   * network/timeout/5xx/429/unknown-kid rotation still keep last-known-good.
+   * Runs through `forcedRevalidate`, so it shares `checkOnLaunch`'s deny/keep triage
+   * (documented there) rather than blanket-catching like Swift does.
    */
   async activeRevalidate(): Promise<void> {
     await this.ensureHydrated();
     if (!this.hasStoredLicense()) return;
-    const last = this.lastActiveRevalidateAt;
-    if (last !== null && Date.now() - last < ACTIVE_REVALIDATE_DEBOUNCE_MS) return;
-    this.lastActiveRevalidateAt = Date.now();
+    const now = Date.now();
+    if (now - this.lastActiveRevalidateAt < ACTIVE_REVALIDATE_DEBOUNCE_MS) return;
+    this.lastActiveRevalidateAt = now;
     await this.forcedRevalidate();
   }
 
