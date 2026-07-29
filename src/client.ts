@@ -33,6 +33,24 @@ interface ValidateResp { valid: boolean; license_expires_at?: number | null; lea
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const nowSecs = () => Math.floor(Date.now() / 1000);
 
+/** Debounce window for `activeRevalidate` (parity with Swift `activeRevalidateDebounce`). */
+const ACTIVE_REVALIDATE_DEBOUNCE_MS = 60_000;
+
+/**
+ * Monotonic milliseconds, for measuring elapsed time rather than telling it.
+ *
+ * Deliberately not `Date.now()`: the debounce SUPPRESSES revalidation, so a
+ * wall clock that moves backwards suppresses revocation enforcement for the
+ * size of the jump. On a licensing SDK that is an adversarial move, not just an
+ * NTP correction. `performance.now()` cannot be steered this way. It is present
+ * in every browser and in Node >= 16; the fallback exists only for exotic
+ * embedders, where the old (steerable) behaviour is still better than throwing.
+ */
+const monotonicNow = (): number =>
+  typeof performance !== "undefined" && typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
+
 export class Keylight {
   private readonly cfg: KeylightConfig;
   private store: LicenseStore;
@@ -43,6 +61,11 @@ export class Keylight {
   private readonly storeOption?: LicenseStore;
   private readonly machineId: () => string | null | Promise<string | null>;
   private readonly stableDeviceId?: string | (() => string | null | Promise<string | null>);
+  /** `activeRevalidate` debounce stamp (monotonic ms; null = never run). IN MEMORY BY
+   *  DESIGN — never written to the store, so a process restart / page reload always
+   *  revalidates. Null rather than 0 because `monotonicNow()` starts near zero, so 0
+   *  would read as "just ran" and swallow the very first call of the process. */
+  private lastActiveRevalidateAt: number | null = null;
 
   constructor(options: KeylightOptions) {
     this.cfg = normalizeConfig(options);
@@ -296,7 +319,19 @@ export class Keylight {
    * so a dashboard revoke or expiry lands on the very next launch instead of lagging
    * behind `refreshIfNeeded`'s debounce (5m) / stale (6h) / near-expiry (24h) windows
    * (G1). `refreshIfNeeded`'s cadence is unchanged and still governs long-running
-   * hosts between launches.
+   * hosts between launches. Never throws; see `forcedRevalidate` for the deny/keep
+   * triage it shares with `activeRevalidate`.
+   */
+  async checkOnLaunch(): Promise<void> {
+    await this.ensureHydrated();
+    if (!this.hasStoredLicense()) return;
+    await this.forcedRevalidate();
+  }
+
+  /**
+   * One forced `validate()` round-trip, never throwing. Shared by `checkOnLaunch`
+   * (launch) and `activeRevalidate` (foreground/active use) so both paths reconcile
+   * identically — callers own the hydrate + `hasStoredLicense` guard.
    *
    * A server-side definitive rejection (`!resp.valid`) is reconciled into the store by
    * `validate()` itself, so `state()` denies immediately after this returns.
@@ -319,20 +354,59 @@ export class Keylight {
    * branch — drop the cached lease so `state()` stops reporting Licensed — then fires
    * the lifecycle transition so subscribers see the change.
    */
-  async checkOnLaunch(): Promise<void> {
-    await this.ensureHydrated();
-    if (!this.hasStoredLicense()) return;
-    const prevState = this.state();
-    const prevExpiry = this.getNum(ACCOUNT.LICENSE_EXPIRES_AT);
+  private async forcedRevalidate(): Promise<void> {
     try {
       await this.validate();
+      return; // validate() reconciles the store and fires its own lifecycle event.
     } catch (e) {
-      if (isDefinitiveLaunchDeny(e)) {
-        await this.del(ACCOUNT.LEASE);
-        this.emitLifecycle(prevState, prevExpiry);
-      }
-      // else: transient — keep last-known-good, bounded by maxOfflineDays.
+      if (!isDefinitiveLaunchDeny(e)) return; // transient — keep last-known-good, bounded by maxOfflineDays.
     }
+    // Read the "previous" snapshot HERE, not before the call: every path on which
+    // validate() throws does so before it writes anything (post() failure, JSON.parse,
+    // verifyOrReject), so this is still the pre-call state — and skipping it on the
+    // success path avoids a redundant state() (lease JSON.parse + ed25519 verify) on
+    // what is a per-window-focus hot path for activeRevalidate.
+    const prevState = this.state();
+    const prevExpiry = this.getNum(ACCOUNT.LICENSE_EXPIRES_AT);
+    await this.del(ACCOUNT.LEASE);
+    this.emitLifecycle(prevState, prevExpiry);
+  }
+
+  /**
+   * Force a re-validation on active use (window focus / popover open / route change),
+   * debounced to 60s. Mirrors Swift `activeRevalidate()`.
+   *
+   * This is the CADENCE primitive `refreshIfNeeded` can't be: with multi-day leases a
+   * long-running app would otherwise sit inside `refreshIfNeeded`'s debounce (5m) /
+   * stale (6h) / near-expiry (24h) gates and not notice a dashboard revoke until the
+   * next launch. Call it whenever the user brings the app forward.
+   *
+   * Semantics:
+   *  - No stored license key ⇒ no-op, no network call (and the debounce clock is NOT
+   *    started, matching Swift's guard-then-debounce order).
+   *  - Debounced at 60s, held in memory ONLY (never persisted), so a process restart or
+   *    page reload always revalidates — a reload is exactly when you want a fresh check.
+   *  - Bypasses every staleness gate: it goes straight to `validate()`.
+   *  - A definitive rejection (`valid:false`, e.g. the worker's HTTP 422 revoke) is
+   *    reconciled into the store by `validate()` itself, so `state()` denies as soon as
+   *    this resolves.
+   *  - A transient failure leaves state untouched — never downgrade a live session on a
+   *    network blip. Never throws.
+   *
+   * Runs through `forcedRevalidate`, so it shares `checkOnLaunch`'s deny/keep triage
+   * (documented there) rather than blanket-catching like Swift does.
+   */
+  async activeRevalidate(): Promise<void> {
+    await this.ensureHydrated();
+    if (!this.hasStoredLicense()) return;
+    const now = monotonicNow();
+    if (
+      this.lastActiveRevalidateAt !== null &&
+      now - this.lastActiveRevalidateAt < ACTIVE_REVALIDATE_DEBOUNCE_MS
+    )
+      return;
+    this.lastActiveRevalidateAt = now;
+    await this.forcedRevalidate();
   }
 
   get upgradeUrl(): string | null {
