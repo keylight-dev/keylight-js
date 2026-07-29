@@ -112,6 +112,47 @@ test("(4) the debounce is in memory only -- a fresh instance over the same store
   expect(calls(), "the debounce must not survive a reload").toBe(2);
 });
 
+// The debounce suppresses revalidation, so anchoring it to the wall clock let a
+// backwards clock jump suppress revocation enforcement for the size of the jump.
+// On a licensing SDK that is an adversarial move, not just an NTP correction.
+test("(4b) the debounce is immune to a backwards wall clock", async () => {
+  const store = await seededLicensedStore(60);
+  const { t, calls } = countingTransport(200, okBody());
+  const kl = new Keylight({ tenantId: "t", productId: "p", trustedKeys: TRUSTED_KEYS, transport: t, store });
+  await kl.load();
+
+  await kl.activeRevalidate();
+  expect(calls()).toBe(1);
+
+  // Wind the wall clock back a day. A Date.now()-anchored debounce would now
+  // compute a large negative elapsed time and suppress every subsequent call.
+  const realNow = Date.now;
+  Date.now = () => realNow() - 86_400_000;
+  try {
+    await kl.activeRevalidate();
+  } finally {
+    Date.now = realNow;
+  }
+
+  // Still debounced -- but by monotonic time, not the wall clock, so this is the
+  // 60s window doing its job rather than the clock jump doing it.
+  expect(calls(), "a clock jump must not change debounce behaviour").toBe(1);
+});
+
+// `performance.now()` starts near zero, so a 0 sentinel would read as "just ran"
+// and swallow the first call of every process -- the one call that matters most,
+// since it is the post-launch revocation check.
+test("(4c) the very first call of a process is never suppressed", async () => {
+  const store = await seededLicensedStore(60);
+  const { t, calls } = countingTransport(200, okBody());
+  const kl = new Keylight({ tenantId: "t", productId: "p", trustedKeys: TRUSTED_KEYS, transport: t, store });
+  await kl.load();
+
+  await kl.activeRevalidate();
+
+  expect(calls(), "first activeRevalidate must always reach the network").toBe(1);
+});
+
 test("(5) a revoke (HTTP 422, valid:false) downgrades immediately", async () => {
   const store = await seededLicensedStore(60);
   // Real worker wire shape for a dashboard revoke: 422 with valid:false and no lease.

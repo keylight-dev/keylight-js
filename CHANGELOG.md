@@ -5,7 +5,7 @@ All notable changes to the Keylight JavaScript/TypeScript SDK are documented her
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.5] - 2026-07-29
 
 ### Added
 
@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   live session, and it never throws. The debounce is held in memory only, so a
   process restart or page reload always revalidates. Mirrors the Swift SDK's
   `activeRevalidate()`.
+
+### Fixed
+
+- **The `activeRevalidate()` debounce no longer follows the wall clock.** It now
+  measures elapsed time with `performance.now()`. Because the debounce
+  *suppresses* revalidation, a system clock moved backwards previously
+  suppressed revocation enforcement for the size of the jump — indefinitely, if
+  the clock stayed back. Falls back to the previous behaviour only where
+  `performance` is unavailable.
 
 ## [0.1.4] - 2026-07-17
 

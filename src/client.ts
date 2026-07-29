@@ -36,6 +36,21 @@ const nowSecs = () => Math.floor(Date.now() / 1000);
 /** Debounce window for `activeRevalidate` (parity with Swift `activeRevalidateDebounce`). */
 const ACTIVE_REVALIDATE_DEBOUNCE_MS = 60_000;
 
+/**
+ * Monotonic milliseconds, for measuring elapsed time rather than telling it.
+ *
+ * Deliberately not `Date.now()`: the debounce SUPPRESSES revalidation, so a
+ * wall clock that moves backwards suppresses revocation enforcement for the
+ * size of the jump. On a licensing SDK that is an adversarial move, not just an
+ * NTP correction. `performance.now()` cannot be steered this way. It is present
+ * in every browser and in Node >= 16; the fallback exists only for exotic
+ * embedders, where the old (steerable) behaviour is still better than throwing.
+ */
+const monotonicNow = (): number =>
+  typeof performance !== "undefined" && typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
+
 export class Keylight {
   private readonly cfg: KeylightConfig;
   private store: LicenseStore;
@@ -46,9 +61,11 @@ export class Keylight {
   private readonly storeOption?: LicenseStore;
   private readonly machineId: () => string | null | Promise<string | null>;
   private readonly stableDeviceId?: string | (() => string | null | Promise<string | null>);
-  /** `activeRevalidate` debounce clock (ms epoch; 0 = never run). IN MEMORY BY DESIGN —
-   *  never written to the store, so a process restart / page reload always revalidates. */
-  private lastActiveRevalidateAt = 0;
+  /** `activeRevalidate` debounce stamp (monotonic ms; null = never run). IN MEMORY BY
+   *  DESIGN — never written to the store, so a process restart / page reload always
+   *  revalidates. Null rather than 0 because `monotonicNow()` starts near zero, so 0
+   *  would read as "just ran" and swallow the very first call of the process. */
+  private lastActiveRevalidateAt: number | null = null;
 
   constructor(options: KeylightOptions) {
     this.cfg = normalizeConfig(options);
@@ -382,8 +399,12 @@ export class Keylight {
   async activeRevalidate(): Promise<void> {
     await this.ensureHydrated();
     if (!this.hasStoredLicense()) return;
-    const now = Date.now();
-    if (now - this.lastActiveRevalidateAt < ACTIVE_REVALIDATE_DEBOUNCE_MS) return;
+    const now = monotonicNow();
+    if (
+      this.lastActiveRevalidateAt !== null &&
+      now - this.lastActiveRevalidateAt < ACTIVE_REVALIDATE_DEBOUNCE_MS
+    )
+      return;
     this.lastActiveRevalidateAt = now;
     await this.forcedRevalidate();
   }
