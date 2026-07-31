@@ -5,7 +5,37 @@ All notable changes to the Keylight JavaScript/TypeScript SDK are documented her
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.5] - 2026-07-29
+## [0.1.6] - 2026-08-01
+
+### Changed
+
+- **`platform` now reports the operating system, not the JavaScript runtime.**
+  It previously sent `node` / `deno` / `bun` / `web`, which meant every Electron
+  app reported `node` no matter which OS it ran on — so a dashboard could not
+  tell a Windows install base from a macOS one, and the breakdown was not
+  comparable with the Swift, Rust, C++ and C# SDKs, all of which report the OS.
+  It now sends the same canonical tokens they do: `macos`, `windows`, `linux`
+  (and an unmapped `process.platform` value verbatim, e.g. `freebsd`).
+
+  Where there is genuinely no host OS to report — a page in a browser, an
+  isolate on the edge — the runtime token is still the honest answer and is
+  kept: `web`, `workers`, `unknown`. The SDK deliberately does **not** read
+  `navigator.userAgentData.platform` to guess a browser's OS; it is
+  Chromium-only and a fingerprinting surface, and this SDK avoids the
+  User-Agent for the same reason it avoids it in `instance_name`.
+
+  No app code changes. If you have been reading the platform breakdown, expect
+  `node` to stop growing and `macos` / `windows` / `linux` to start; historical
+  rows keep their old token.
+
+### Added
+
+- **`sdk` field identifying this SDK on activate/validate/keyless calls.**
+  Sends `js`. Keylight used to work out which SDK a device ran from the *shape*
+  of its `platform` token — feasible only while each SDK had its own
+  vocabulary, which the change above ends. Exported as `SDK_ID`. Requires no
+  action from you; older SDK versions keep working, and the server falls back to
+  the previous inference when the field is absent.
 
 ### Added
 
