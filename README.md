@@ -342,6 +342,25 @@ KEYLIGHT_LIVE=1 npm run test:live         # opt-in live tests vs the demo tenant
 | JavaScript (this repo) | Available | [keylight-js](https://github.com/keylight-dev/keylight-js) |
 | C# · C++ | Planned | unified by the same cross-SDK conformance vectors |
 
+## About Keylight
+
+Keylight is the licensing layer for desktop apps. You keep your own Stripe account,
+your own pricing, and your own customers — Keylight issues the licenses and tells your
+app who is allowed to run it.
+
+- **License keys** issued automatically when a payment completes
+- **Device activations** with limits you set, and self-serve deactivation
+- **Offline validation** — signed Ed25519 leases your app verifies locally
+- **Feature entitlements** signed into the lease, so tiers work offline too
+
+[keylight.dev](https://keylight.dev) · [Documentation](https://docs.keylight.dev) · [Pricing](https://keylight.dev/pricing)
+
+### Further reading
+
+- [How to Add License Keys to an Electron App](https://keylight.dev/blog/add-license-keys-electron-app)
+- [How to Add License Keys to a Tauri App](https://keylight.dev/blog/add-license-keys-tauri-app)
+- [Tauri vs Electron for Licensed Desktop Apps](https://keylight.dev/blog/tauri-vs-electron-licensed-desktop-apps)
+
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
