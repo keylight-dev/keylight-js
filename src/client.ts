@@ -105,8 +105,8 @@ export class Keylight {
     if (this.cfg.sdkKey) h.push(["X-Keylight-SDK-Key", this.cfg.sdkKey]);
     return h;
   }
-  private bodyWithTelemetry(map: Record<string, unknown>): string {
-    applyTelemetry(map, this.cfg.appVersion);
+  private async bodyWithTelemetry(map: Record<string, unknown>): Promise<string> {
+    await applyTelemetry(map, this.cfg.appVersion);
     return JSON.stringify(map);
   }
 
@@ -140,7 +140,7 @@ export class Keylight {
    * @internal
    */
   async _postForTest(path: string, map: Record<string, unknown>, decodable4xx: number[] = []) {
-    return this.post(path, this.bodyWithTelemetry(map), decodable4xx);
+    return this.post(path, await this.bodyWithTelemetry(map), decodable4xx);
   }
 
   // --- verification helpers ---
@@ -161,7 +161,7 @@ export class Keylight {
 
     let res: { status: number; body: string };
     try {
-      res = await this.post("activate", this.bodyWithTelemetry(map));
+      res = await this.post("activate", await this.bodyWithTelemetry(map));
     } catch (e) {
       if (e instanceof ClientError) return fail(e.message || `Activation failed (HTTP ${e.status})`);
       throw e;
@@ -192,7 +192,7 @@ export class Keylight {
     const mh = await this.currentMachineHash();
     if (mh) map.machine_hash = mh;
     let res: { status: number; body: string };
-    try { res = await this.post("validate", this.bodyWithTelemetry(map), [422]); }
+    try { res = await this.post("validate", await this.bodyWithTelemetry(map), [422]); }
     catch (e) { if (e instanceof ClientError) return { valid: false, lease: null, licenseExpiresAt: null, error: e.message || `Validation failed (HTTP ${e.status})` }; throw e; }
 
     let resp: ValidateResp;
@@ -498,7 +498,7 @@ export class Keylight {
     const map: Record<string, unknown> = { instance_id: instance, state };
     const mh = await this.currentMachineHash();
     if (mh) map.machine_hash = mh;
-    const body = this.bodyWithTelemetry(map);
+    const body = await this.bodyWithTelemetry(map);
     const out = await this.post("keyless", body).catch(() => null);
     // post() returns only on 200; on success record state + ping (parity with Rust).
     if (out) { await this.setStr(ACCOUNT.KEYLESS_LAST_STATE, state); await this.setStr(ACCOUNT.LAST_KEYLESS_PING_AT, String(nowSecs())); }

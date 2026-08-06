@@ -24,4 +24,8 @@ test("apiUrl + headers + telemetry are built correctly", async () => {
   const body = JSON.parse(calls[0].body);
   expect(body.sdk_version).toBeTruthy();
   expect(body.app_version).toBe("9.9.9");
+  // Phase 3 device dimensions ride the same body under Node (never device_class).
+  expect(body.arch).toMatch(/^(arm64|x86_64)$/);
+  expect(body.os_version).toMatch(/^\d+(\.\d+)*$/);
+  expect("device_class" in body).toBe(false);
 });
