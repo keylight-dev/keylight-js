@@ -27,6 +27,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   this SDK keeps its stance of not reading one. `device_class` is never sent;
   the backend derives it from the OS. No app code changes.
 
+- **Coarse device capacity on the same telemetry fields: `cpu_cores` and
+  `memory`.** Requests that already carry telemetry report which *bucket* the
+  machine falls in — `1-2`, `3-4`, `5-8`, `9-16`, `17+` cores, and `<4GB`,
+  `4-8GB`, `8-16GB`, `16-32GB`, `32-64GB`, `64GB+` of RAM. The exact core count
+  and the exact byte figure never leave the machine: a licensing SDK reporting
+  precise hardware specs reads as fingerprinting, so only the bucket is sent.
+  Bucket edges match the other SDKs exactly, so one machine population never
+  splits across two buckets. Both fields are optional on the wire and only sent
+  where a host OS exists to ask (Node, Bun, Electron, Deno). Browser pages and
+  edge isolates send neither: `navigator.hardwareConcurrency` and
+  `navigator.deviceMemory` are documented fingerprinting surfaces and this SDK
+  declines to read them, the same stance it takes on `arch`. No app code
+  changes.
+
 ## [0.1.6] - 2026-08-01
 
 ### Changed

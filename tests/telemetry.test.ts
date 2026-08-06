@@ -2,6 +2,7 @@ import { test, expect, describe, afterEach, vi } from "vitest";
 import {
   applyTelemetry, detectPlatform, detectArch, normalizeOsVersion, readOsRelease, SDK_ID,
   APP_VERSION_MAX, PLATFORM_MAX, SDK_ID_MAX,
+  bucketCpuCores, bucketMemoryBytes, readCpuCores, readTotalMemoryBytes,
 } from "../src/telemetry.js";
 import { execFileSync } from "node:child_process";
 import { release } from "node:os";
@@ -204,5 +205,96 @@ describe("device dimensions (Phase 3): arch + os_version", () => {
     const m: Record<string, unknown> = {};
     await applyTelemetry(m, "1.2.3");
     expect("device_class" in m).toBe(false);
+  });
+});
+
+describe("device capacity buckets: cpu_cores + memory", () => {
+  const realPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  afterEach(() => {
+    Object.defineProperty(process, "platform", realPlatform);
+    vi.unstubAllGlobals();
+  });
+
+  const GiB = 1024 ** 3;
+
+  test("core buckets are inclusive of both endpoints", () => {
+    // Cross-SDK contract: 4 cores is the TOP of "3-4", 5 the BOTTOM of "5-8".
+    // A boundary that disagrees with Swift/Rust/C#/C++ splits one machine
+    // population across two buckets — the bug just fixed for macOS os_version.
+    expect(bucketCpuCores(1)).toBe("1-2");
+    expect(bucketCpuCores(2)).toBe("1-2");
+    expect(bucketCpuCores(3)).toBe("3-4");
+    expect(bucketCpuCores(4)).toBe("3-4");
+    expect(bucketCpuCores(5)).toBe("5-8");
+    expect(bucketCpuCores(8)).toBe("5-8");
+    expect(bucketCpuCores(9)).toBe("9-16");
+    expect(bucketCpuCores(16)).toBe("9-16");
+    expect(bucketCpuCores(17)).toBe("17+");
+    expect(bucketCpuCores(256)).toBe("17+");
+  });
+
+  test("a nonsense core count is omitted, never bucketed", () => {
+    expect(bucketCpuCores(0)).toBeUndefined();
+    expect(bucketCpuCores(-4)).toBeUndefined();
+    expect(bucketCpuCores(2.5)).toBeUndefined();
+    expect(bucketCpuCores(Number.NaN)).toBeUndefined();
+    expect(bucketCpuCores(Number.POSITIVE_INFINITY)).toBeUndefined();
+  });
+
+  test("memory buckets are lower-inclusive and upper-exclusive, in GiB", () => {
+    // "4-8GB" means 4GiB <= x < 8GiB, so exactly 8GiB lands in "8-16GB".
+    expect(bucketMemoryBytes(3.9 * GiB)).toBe("<4GB");
+    expect(bucketMemoryBytes(4 * GiB)).toBe("4-8GB");
+    expect(bucketMemoryBytes(7.9 * GiB)).toBe("4-8GB");
+    expect(bucketMemoryBytes(8 * GiB)).toBe("8-16GB");
+    expect(bucketMemoryBytes(16 * GiB)).toBe("16-32GB");
+    expect(bucketMemoryBytes(32 * GiB)).toBe("32-64GB");
+    expect(bucketMemoryBytes(64 * GiB)).toBe("64GB+");
+    expect(bucketMemoryBytes(128 * GiB)).toBe("64GB+");
+  });
+
+  test("real-world RAM that never lands on a power of two still buckets right", () => {
+    // Physical RAM is reported in raw bytes and comes up a hair short; rounding
+    // first would push a 16GB Mac down into "8-16GB".
+    expect(bucketMemoryBytes(17_179_869_184)).toBe("16-32GB"); // 16 GiB exactly
+    expect(bucketMemoryBytes(16_000_000_000)).toBe("8-16GB"); // 16 GB decimal < 16 GiB
+    expect(bucketMemoryBytes(8_589_934_592)).toBe("8-16GB"); // 8 GiB exactly
+  });
+
+  test("a nonsense byte count is omitted, never bucketed", () => {
+    expect(bucketMemoryBytes(0)).toBeUndefined();
+    expect(bucketMemoryBytes(-1)).toBeUndefined();
+    expect(bucketMemoryBytes(Number.NaN)).toBeUndefined();
+    expect(bucketMemoryBytes(Number.POSITIVE_INFINITY)).toBeUndefined();
+    expect(bucketMemoryBytes(undefined)).toBeUndefined();
+  });
+
+  test("the raw value never crosses the wire — only the bucket string", async () => {
+    const m: Record<string, unknown> = {};
+    await applyTelemetry(m, "1.2.3");
+    expect(m.cpu_cores).toMatch(/^(1-2|3-4|5-8|9-16|17\+)$/);
+    expect(m.memory).toMatch(/^(<4GB|4-8GB|8-16GB|16-32GB|32-64GB|64GB\+)$/);
+    // No exact count or byte figure anywhere in the body: every value is a
+    // string, and neither raw number appears among them.
+    expect(Object.values(m).every((v) => typeof v === "string")).toBe(true);
+    expect(JSON.stringify(m)).not.toContain(String(await readTotalMemoryBytes()));
+    expect(Object.values(m)).not.toContain(String(await readCpuCores()));
+  });
+
+  test("browser/edge runtimes send neither field", async () => {
+    // navigator.hardwareConcurrency and navigator.deviceMemory are documented
+    // fingerprinting surfaces; this SDK refuses them, as it refuses
+    // navigator.userAgentData for arch.
+    Object.defineProperty(process, "platform", { value: "", configurable: true });
+    vi.stubGlobal("window", {});
+    vi.stubGlobal("document", {});
+    vi.stubGlobal("navigator", { hardwareConcurrency: 8, deviceMemory: 8 });
+    const m: Record<string, unknown> = {};
+    await applyTelemetry(m, "1.2.3");
+    expect(m.platform).toBe("web");
+    expect("cpu_cores" in m).toBe(false);
+    expect("memory" in m).toBe(false);
+    expect(await readCpuCores()).toBeUndefined();
+    expect(await readTotalMemoryBytes()).toBeUndefined();
   });
 });

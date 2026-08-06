@@ -181,6 +181,92 @@ export async function readOsRelease(): Promise<string | undefined> {
 }
 
 /**
+ * Bucket a CPU core count into the shared cross-SDK vocabulary.
+ *
+ * The bucket, never the number. A developer proxying their own app must not
+ * see a licensing SDK report their exact core count — that reads as
+ * fingerprinting — so the precise value never crosses the wire.
+ *
+ * Ranges are inclusive of both endpoints: 4 cores is the top of `3-4`, 5 the
+ * bottom of `5-8`. The other four SDKs draw the lines in the same places; a
+ * boundary that disagrees splits one machine population across two buckets.
+ */
+export function bucketCpuCores(cores: number | undefined): string | undefined {
+  if (typeof cores !== "number" || !Number.isInteger(cores) || cores < 1) return undefined;
+  if (cores <= 2) return "1-2";
+  if (cores <= 4) return "3-4";
+  if (cores <= 8) return "5-8";
+  if (cores <= 16) return "9-16";
+  return "17+";
+}
+
+const GIB = 1024 ** 3;
+
+/**
+ * Bucket physical RAM, taken as a raw byte count, into the shared cross-SDK
+ * vocabulary.
+ *
+ * Buckets are lower-inclusive and upper-exclusive — `4-8GB` means
+ * 4GiB <= x < 8GiB — so exactly 8GiB lands in `8-16GB`. The comparison is
+ * against the raw bytes with GiB = 1024^3 and no pre-rounding: an OS reports
+ * physical RAM a hair under the round figure often enough that rounding first
+ * would push a 16GB machine down a bucket.
+ */
+export function bucketMemoryBytes(bytes: number | undefined): string | undefined {
+  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes <= 0) return undefined;
+  if (bytes < 4 * GIB) return "<4GB";
+  if (bytes < 8 * GIB) return "4-8GB";
+  if (bytes < 16 * GIB) return "8-16GB";
+  if (bytes < 32 * GIB) return "16-32GB";
+  if (bytes < 64 * GIB) return "32-64GB";
+  return "64GB+";
+}
+
+/**
+ * True where a host OS exists to ask about hardware — Node, Bun, Electron's
+ * main process, Deno. False in a browser page or an edge isolate.
+ */
+function hasHostOs(): boolean {
+  const g = globalThis as Record<string, unknown>;
+  const deno = g.Deno as { build?: { os?: string } } | undefined;
+  if (deno?.build?.os) return true;
+  return typeof process !== "undefined" && typeof process.platform === "string" && !!process.platform;
+}
+
+/**
+ * The number of logical CPUs, or undefined where there is no host OS to ask.
+ *
+ * Browsers and edge isolates report nothing: `navigator.hardwareConcurrency`
+ * is a documented fingerprinting surface, and this SDK refuses it for the same
+ * reason `detectArch` refuses `navigator.userAgentData`.
+ */
+export async function readCpuCores(): Promise<number | undefined> {
+  if (!hasHostOs()) return undefined;
+  try {
+    // Guarded dynamic import, the same pattern readOsRelease uses — never
+    // reached in a browser bundle.
+    const os = await import("node:os");
+    const n = typeof os.availableParallelism === "function" ? os.availableParallelism() : os.cpus().length;
+    return Number.isInteger(n) && n > 0 ? n : undefined;
+  } catch { return undefined; }
+}
+
+/**
+ * Total physical memory in bytes, or undefined where there is no host OS.
+ *
+ * Browsers and edge isolates report nothing: `navigator.deviceMemory` is a
+ * fingerprinting surface, same stance as above.
+ */
+export async function readTotalMemoryBytes(): Promise<number | undefined> {
+  if (!hasHostOs()) return undefined;
+  try {
+    const os = await import("node:os");
+    const bytes = os.totalmem();
+    return Number.isFinite(bytes) && bytes > 0 ? bytes : undefined;
+  } catch { return undefined; }
+}
+
+/**
  * Inject telemetry fields into a request body map (parity with Rust
  * telemetry::apply), clamped to backend limits. Every field is optional on the
  * wire; whatever cannot be read cleanly is omitted, never approximated.
@@ -200,4 +286,11 @@ export async function applyTelemetry(map: Record<string, unknown>, appVersion: s
   if (arch) map.arch = arch;
   const osVersion = normalizeOsVersion(await readOsRelease());
   if (osVersion) map.os_version = osVersion;
+
+  // Coarse capacity buckets only — the exact core count and byte figure are
+  // deliberately never put on the wire.
+  const cpuCores = bucketCpuCores(await readCpuCores());
+  if (cpuCores) map.cpu_cores = cpuCores;
+  const memory = bucketMemoryBytes(await readTotalMemoryBytes());
+  if (memory) map.memory = memory;
 }
