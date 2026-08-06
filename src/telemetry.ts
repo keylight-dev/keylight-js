@@ -104,26 +104,74 @@ export function normalizeOsVersion(raw: string | null | undefined): string | und
   return m[1];
 }
 
+/** One `sw_vers` child process per process lifetime; concurrent callers share the promise. */
+let macProductVersion: Promise<string | undefined> | undefined;
+
 /**
- * The host OS's release version, where a host OS exists to ask. On macOS this
- * is the Darwin kernel version (e.g. `24.5.0`), not the marketing version —
- * reading the latter would cost a child process (`sw_vers`), which telemetry
- * does not get to spend.
+ * macOS's *marketing* version (`26.1`), via `sw_vers -productVersion`.
+ *
+ * `os.release()` returns the Darwin kernel version (`25.1.0`) instead, which is
+ * a different vocabulary from the one Swift (`ProcessInfo`) and Rust (`sw_vers`)
+ * report. Sending it would split every macOS install across two families of
+ * bucket in the same `osVersion` breakdown — the same OS counted twice under
+ * two names. One child process, once per process, is the price of a number
+ * that can be compared across SDKs.
+ */
+function readMacProductVersion(): Promise<string | undefined> {
+  macProductVersion ??= (async () => {
+    try {
+      const { execFile } = await import("node:child_process");
+      return await new Promise<string | undefined>((resolve) => {
+        // Timed out so a wedged binary can never hold up an activation.
+        execFile("sw_vers", ["-productVersion"], { timeout: 2000 }, (err, stdout) => {
+          resolve(err ? undefined : stdout.trim() || undefined);
+        });
+      });
+    } catch { return undefined; }
+  })();
+  return macProductVersion;
+}
+
+/**
+ * The host OS's release version, where a host OS exists to ask: the marketing
+ * version on macOS, the kernel release on Linux, the build on Windows — matching
+ * what the Swift and Rust SDKs send for each.
+ *
+ * On macOS it is `sw_vers` or nothing. The kernel version is not a fallback:
+ * it is true but in the wrong vocabulary, and a wrong-vocabulary value mints a
+ * phantom bucket that looks like a real macOS release. An absent row is the
+ * honest failure.
  *
  * Browser/edge runtimes return undefined: no OS to report, and nothing
  * non-fingerprinty to read one from.
  */
-async function readOsRelease(): Promise<string | undefined> {
+export async function readOsRelease(): Promise<string | undefined> {
   const g = globalThis as Record<string, unknown>;
 
   // Deno's own accessor first (permission-gated behind --allow-sys).
-  const deno = g.Deno as { osRelease?: () => string } | undefined;
+  const deno = g.Deno as {
+    build?: { os?: string };
+    osRelease?: () => string;
+    permissions?: { query?: (d: unknown) => Promise<{ state?: string }> };
+  } | undefined;
   if (deno?.osRelease) {
+    if (deno.build?.os === "darwin") {
+      // Deno reaches `sw_vers` only by spawning, which needs --allow-run. The
+      // query itself never prompts, so a run that wasn't granted it simply
+      // reports no OS version — a telemetry field does not get to raise a
+      // permission dialog at the user.
+      let granted = false;
+      try {
+        granted = (await deno.permissions?.query?.({ name: "run", command: "sw_vers" }))?.state === "granted";
+      } catch { granted = false; }
+      return granted ? readMacProductVersion() : undefined;
+    }
     try { return deno.osRelease(); } catch { return undefined; }
   }
   // Node, Electron's main process, Bun. Guarded dynamic import, the same
   // pattern store.ts and machine.ts use — never reached in a browser bundle.
   if (typeof process !== "undefined" && typeof process.platform === "string" && process.platform) {
+    if (process.platform === "darwin") return readMacProductVersion();
     try {
       const os = await import("node:os");
       return os.release();

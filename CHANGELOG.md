@@ -14,9 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   beacon) now also report the CPU architecture as a canonical token (`arm64` /
   `x86_64`; anything else is omitted) and the host OS's release version reduced
   to its dotted-numeric form (a Linux kernel release like `6.8.0-45-generic` is
-  sent as `6.8.0`; on macOS this is the Darwin kernel version). Both fields are
-  optional on the wire and only sent where a host OS exists to ask: under Node,
-  Bun, Electron and Deno. Browser pages and edge isolates send neither — there
+  sent as `6.8.0`; on macOS it is the marketing version from `sw_vers`, e.g.
+  `26.1`, matching what the Swift and Rust SDKs report — not the Darwin kernel
+  version, which would place the same macOS release in a different bucket. The
+  `sw_vers` call runs at most once per process, and where it cannot run the
+  version is omitted rather than reported in the other vocabulary). Both fields
+  are optional on the wire and only sent where a host OS exists to ask: under
+  Node, Bun, Electron and Deno — on Deno the macOS version needs `--allow-run`,
+  and is omitted rather than prompting for it. Browser pages and edge isolates
+  send neither — there
   is no reliable source there that isn't also a fingerprinting surface, and
   this SDK keeps its stance of not reading one. `device_class` is never sent;
   the backend derives it from the OS. No app code changes.

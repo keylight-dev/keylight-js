@@ -1,8 +1,10 @@
 import { test, expect, describe, afterEach, vi } from "vitest";
 import {
-  applyTelemetry, detectPlatform, detectArch, normalizeOsVersion, SDK_ID,
+  applyTelemetry, detectPlatform, detectArch, normalizeOsVersion, readOsRelease, SDK_ID,
   APP_VERSION_MAX, PLATFORM_MAX, SDK_ID_MAX,
 } from "../src/telemetry.js";
+import { execFileSync } from "node:child_process";
+import { release } from "node:os";
 
 test("applies sdk_version + platform + sdk; app_version only when provided", async () => {
   const m: Record<string, unknown> = {};
@@ -163,6 +165,39 @@ describe("device dimensions (Phase 3): arch + os_version", () => {
     expect(m.platform).toBe("web");
     expect("arch" in m).toBe(false);
     expect("os_version" in m).toBe(false);
+  });
+
+  const onMac = process.platform === "darwin";
+  test.runIf(onMac)("macOS reports the marketing version, not the Darwin kernel version", async () => {
+    // The bucket-parity check: Swift (ProcessInfo) and Rust (sw_vers) both send
+    // the marketing version, so `os.release()` here would split one macOS
+    // release across two names in the same osVersion breakdown.
+    const marketing = execFileSync("sw_vers", ["-productVersion"]).toString().trim();
+    expect(await readOsRelease()).toBe(marketing);
+
+    const m: Record<string, unknown> = {};
+    await applyTelemetry(m, "1.2.3");
+    expect(m.os_version).toBe(normalizeOsVersion(marketing));
+    // Same machine, and the two vocabularies really do disagree — otherwise
+    // this test would pass on a coincidence rather than on the fix.
+    expect(release()).not.toBe(marketing);
+  });
+
+  test("Deno on macOS omits the version unless --allow-run was already granted", async () => {
+    // Querying never prompts; spawning without the grant would. A telemetry
+    // field does not get to raise a permission dialog, so it reports nothing —
+    // and never the kernel version, which would mint a phantom bucket.
+    vi.stubGlobal("Deno", {
+      build: { os: "darwin", arch: "aarch64" },
+      osRelease: () => "25.1.0",
+      permissions: { query: async () => ({ state: "prompt" }) },
+    });
+    expect(await readOsRelease()).toBeUndefined();
+  });
+
+  test("Deno off macOS still uses its own osRelease accessor", async () => {
+    vi.stubGlobal("Deno", { build: { os: "linux", arch: "x86_64" }, osRelease: () => "6.8.0-45-generic" });
+    expect(await readOsRelease()).toBe("6.8.0-45-generic");
   });
 
   test("device_class is never sent — the worker only honors it from iOS SDKs", async () => {
