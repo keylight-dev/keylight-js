@@ -5,6 +5,22 @@ All notable changes to the Keylight JavaScript/TypeScript SDK are documented her
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Device dimensions on the telemetry fields: `arch` and `os_version`.**
+  Requests that already carry telemetry (`activate`, `validate`, the keyless
+  beacon) now also report the CPU architecture as a canonical token (`arm64` /
+  `x86_64`; anything else is omitted) and the host OS's release version reduced
+  to its dotted-numeric form (a Linux kernel release like `6.8.0-45-generic` is
+  sent as `6.8.0`; on macOS this is the Darwin kernel version). Both fields are
+  optional on the wire and only sent where a host OS exists to ask: under Node,
+  Bun, Electron and Deno. Browser pages and edge isolates send neither — there
+  is no reliable source there that isn't also a fingerprinting surface, and
+  this SDK keeps its stance of not reading one. `device_class` is never sent;
+  the backend derives it from the OS. No app code changes.
+
 ## [0.1.6] - 2026-08-01
 
 ### Changed
