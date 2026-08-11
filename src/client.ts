@@ -496,6 +496,59 @@ export class Keylight {
     await this.forcedRevalidate();
   }
 
+  /**
+   * Poll-revalidate briefly after an upgrade so new entitlements show up without waiting
+   * for the normal refresh cadence. Payment webhooks (Stripe/Polar/etc.) can lag a few
+   * seconds behind the checkout redirect; call this right after the upgrade flow returns
+   * so the UI can reflect the new plan as soon as the server has it, instead of the user
+   * seeing stale entitlements until the next `activeRevalidate`/`refreshIfNeeded`. Mirrors
+   * the Swift SDK's `refreshAfterUpgrade`.
+   *
+   * `timeout` and `pollInterval` are in MILLISECONDS (this SDK's convention — see
+   * `ACTIVE_REVALIDATE_DEBOUNCE_MS` — unlike the Swift SDK, which takes seconds).
+   * Defaults: poll every 2s, give up after 30s. `pollInterval` is clamped to a 100ms
+   * floor. Pass an `AbortSignal` to cancel early (e.g. the caller navigated away).
+   *
+   * Returns `true` as soon as either the entitlement set or the license state differs
+   * from what it was when this was called (including a definitive rejection landing
+   * mid-poll, which `validate()` itself reconciles into the store as a state change), or
+   * once the caller's signal aborts or the timeout elapses without one. Returns `false`
+   * immediately, with zero network calls, when there is no stored license to refresh.
+   *
+   * A seat-only upgrade that doesn't change entitlements or state (e.g. adding a seat to
+   * a plan that already has the entitlements it grants) won't be observed as a change —
+   * this only detects entitlement/state transitions, not arbitrary server-side deltas.
+   *
+   * A transient failure (network blip, 5xx, malformed response, unknown-kid signature)
+   * is swallowed and polling continues, mirroring `forcedRevalidate`'s "never let a blip
+   * downgrade a live session" stance; only a genuine change (or timeout/abort) ends the loop.
+   */
+  async refreshAfterUpgrade(timeout = 30_000, pollInterval = 2_000, signal?: AbortSignal): Promise<boolean> {
+    await this.ensureHydrated();
+    if (!this.hasStoredLicense()) return false;
+
+    const entKey = () => JSON.stringify([...(this.cachedLease?.entitlements ?? [])].sort());
+    const beforeEntitlements = entKey();
+    const beforeState = JSON.stringify(this.state());
+    const poll = Math.max(pollInterval, 100);
+    const deadline = monotonicNow() + timeout;
+
+    for (;;) {
+      try {
+        await this.validate();
+      } catch {
+        // Transient — keep polling rather than giving up on a blip (mirrors
+        // forcedRevalidate's triage: a definitive server rejection is reconciled by
+        // validate() itself below, without throwing, so anything that DOES throw here
+        // is the transient side of that triage).
+      }
+      if (entKey() !== beforeEntitlements || JSON.stringify(this.state()) !== beforeState) return true;
+      if (signal?.aborted) return false;
+      if (monotonicNow() >= deadline) return false;
+      await sleep(poll);
+    }
+  }
+
   get upgradeUrl(): string | null {
     const key = this.cachedLicenseKey;
     if (!key) return null;
