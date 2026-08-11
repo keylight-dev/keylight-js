@@ -141,6 +141,36 @@ test("(5) an already-aborted signal returns false quickly without polling furthe
   expect(elapsed, "must return well before the 1s timeout").toBeLessThan(500);
 });
 
+test("(7) a forged (known-kid, tampered) lease thrown mid-poll drives the manager to invalid -> true", async () => {
+  const store = await seededLicensedStore(60, ["pro"]);
+  const good = signedLease("active", nowSecs() + 30 * 86400, ["pro"]);
+  // Payload changes after signing -- kid stays "k1" (known), but the signature no
+  // longer matches, so verifyOrReject() inside validate() THROWS LeaseVerificationFailed
+  // (kidKnown: true) instead of resolving a valid:false response. Same shape as
+  // active_revalidate.test.ts's (8).
+  const tampered = { ...good, entitlements: [...good.entitlements, "smuggled"] };
+  let call = 0;
+  const t: Transport = {
+    async postJson() {
+      call++;
+      // First poll: nothing changed yet (webhook hasn't landed). Second poll: a
+      // tampered/forged lease arrives -- validate() throws before reconciling.
+      if (call === 1) return { kind: "response", status: 200, body: okBodyWithEntitlements(["pro"]) };
+      return { kind: "response", status: 200, body: JSON.stringify({ valid: true, license_expires_at: nowSecs() + 30 * 86400, lease: tampered }) };
+    },
+    async get() { return { kind: "terminal", error: "n/a" }; },
+  };
+  const kl = new Keylight({ tenantId: "t", productId: "p", trustedKeys: TRUSTED_KEYS, transport: t, store });
+  await kl.load();
+  expect(kl.state()).toEqual({ kind: "Licensed" }); // sanity
+
+  const result = await kl.refreshAfterUpgrade(1_000, 100);
+
+  expect(result).toBe(true);
+  expect(kl.state(), "a thrown definitive deny must drive the manager to invalid, not just time out").not.toEqual({ kind: "Licensed" });
+  expect(kl.cachedLease).toBeNull();
+});
+
 test("(6) a network blip mid-poll does not downgrade, keeps polling until the webhook lands", async () => {
   const store = await seededLicensedStore(2 * 86400, ["pro"]); // well within the offline cap
   let call = 0;

@@ -448,11 +448,25 @@ export class Keylight {
     } catch (e) {
       if (!isDefinitiveLaunchDeny(e)) return; // transient — keep last-known-good, bounded by maxOfflineDays.
     }
-    // Read the "previous" snapshot HERE, not before the call: every path on which
-    // validate() throws does so before it writes anything (post() failure, JSON.parse,
-    // verifyOrReject), so this is still the pre-call state — and skipping it on the
-    // success path avoids a redundant state() (lease JSON.parse + ed25519 verify) on
-    // what is a per-window-focus hot path for activeRevalidate.
+    await this.denyLease();
+  }
+
+  /**
+   * Drop the cached lease and publish the resulting lifecycle transition — the deny
+   * side of a THROWN definitive rejection (`InvalidResponse`, or `LeaseVerificationFailed`
+   * with a known kid; see `isDefinitiveLaunchDeny`). The other kind of definitive
+   * rejection — a non-throwing `!resp.valid` response (e.g. HTTP 422 revoke) — is already
+   * reconciled into the store by `validate()` itself and never reaches this method.
+   *
+   * Read the "previous" snapshot HERE, not before the call: every path on which
+   * validate() throws does so before it writes anything (post() failure, JSON.parse,
+   * verifyOrReject), so this is still the pre-call state.
+   *
+   * Shared by `forcedRevalidate` (checkOnLaunch/activeRevalidate) and
+   * `refreshAfterUpgrade`'s poll loop, so a forged/tampered lease denies identically
+   * everywhere it can be encountered instead of each caller re-deriving the triage.
+   */
+  private async denyLease(): Promise<void> {
     const prevState = this.state();
     const prevExpiry = this.getNum(ACCOUNT.LICENSE_EXPIRES_AT);
     await this.del(ACCOUNT.LEASE);
@@ -510,18 +524,26 @@ export class Keylight {
    * floor. Pass an `AbortSignal` to cancel early (e.g. the caller navigated away).
    *
    * Returns `true` as soon as either the entitlement set or the license state differs
-   * from what it was when this was called (including a definitive rejection landing
-   * mid-poll, which `validate()` itself reconciles into the store as a state change), or
-   * once the caller's signal aborts or the timeout elapses without one. Returns `false`
-   * immediately, with zero network calls, when there is no stored license to refresh.
+   * from what it was when this was called, or once the caller's signal aborts or the
+   * timeout elapses without one. Returns `false` immediately, with zero network calls,
+   * when there is no stored license to refresh.
+   *
+   * A definitive rejection landing mid-poll always counts as a state change, however it
+   * arrives — shares `forcedRevalidate`'s triage (`isDefinitiveLaunchDeny`) rather than
+   * blanket-swallowing every throw:
+   *  - A non-throwing `!resp.valid` response (e.g. HTTP 422 revoke) is reconciled into
+   *    the store by `validate()` itself.
+   *  - A THROWN definitive deny (`InvalidResponse` malformed body, or
+   *    `LeaseVerificationFailed` with a known kid — a tampered/forged lease) is denied
+   *    via the same `denyLease()` path `forcedRevalidate` uses, so it isn't mistaken for
+   *    a transient blip and silently polled past until timeout.
+   *  - Everything else genuinely transient (network blip, 5xx, unknown-kid signature —
+   *    indistinguishable from a legitimate key rotation) is swallowed and polling
+   *    continues; only a genuine change, or timeout/abort, ends the loop.
    *
    * A seat-only upgrade that doesn't change entitlements or state (e.g. adding a seat to
    * a plan that already has the entitlements it grants) won't be observed as a change —
    * this only detects entitlement/state transitions, not arbitrary server-side deltas.
-   *
-   * A transient failure (network blip, 5xx, malformed response, unknown-kid signature)
-   * is swallowed and polling continues, mirroring `forcedRevalidate`'s "never let a blip
-   * downgrade a live session" stance; only a genuine change (or timeout/abort) ends the loop.
    */
   async refreshAfterUpgrade(timeout = 30_000, pollInterval = 2_000, signal?: AbortSignal): Promise<boolean> {
     await this.ensureHydrated();
@@ -536,11 +558,13 @@ export class Keylight {
     for (;;) {
       try {
         await this.validate();
-      } catch {
-        // Transient — keep polling rather than giving up on a blip (mirrors
-        // forcedRevalidate's triage: a definitive server rejection is reconciled by
-        // validate() itself below, without throwing, so anything that DOES throw here
-        // is the transient side of that triage).
+      } catch (e) {
+        // Same triage forcedRevalidate uses: a THROWN definitive deny (malformed body,
+        // or a tampered known-kid lease) must deny here too, not just get swallowed as
+        // if it were a network blip — else a forged lease mid-poll would silently poll
+        // past it until timeout instead of resolving true on the state change.
+        if (isDefinitiveLaunchDeny(e)) await this.denyLease();
+        // else genuinely transient — keep polling rather than giving up on a blip.
       }
       if (entKey() !== beforeEntitlements || JSON.stringify(this.state()) !== beforeState) return true;
       if (signal?.aborted) return false;
