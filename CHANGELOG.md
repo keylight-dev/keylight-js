@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A keyless heartbeat, on by default.** `reportKeylessState` used to go out
+  only when the app called it, which in practice is once at startup — so an
+  Electron app or a resident Node service reported itself once and then looked
+  dead to the dashboard for as long as it ran: `last_seen` never moved past
+  `first_seen`, and the reported app version froze at whatever shipped that day.
+
+  `checkOnLaunch()` now starts a cadence (`keylessHeartbeatMs`, default 6h to
+  match the Worker's server-side gate on keyless writes); `startKeylessHeartbeat()`
+  is public for apps that never call `checkOnLaunch`. Each tick beacons only
+  when the device is keyless — a licensed device sends nothing and reports
+  liveness through `/validate` — and the timer keeps running across that
+  boundary so a lapsed license resumes on its own.
+
+  Nothing to change in your app. `reportKeylessState` still debounces to one
+  request per 24h, so the cadence costs nothing extra on the wire. The timer is
+  `unref`'d on Node/Bun so a six-hour interval can't keep a one-shot script
+  alive, and `stopKeylessHeartbeat()` disposes it. Pass
+  `keylessHeartbeatMs: null` to opt out.
+
 - **Device dimensions on the telemetry fields: `arch` and `os_version`.**
   Requests that already carry telemetry (`activate`, `validate`, the keyless
   beacon) now also report the CPU architecture as a canonical token (`arm64` /

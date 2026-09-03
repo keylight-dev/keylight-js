@@ -31,6 +31,16 @@ export interface KeylightOptions {
    *  value changes the device identity server-side (it counts as a new device). Not part
    *  of the normalized config. */
   stableDeviceId?: string | (() => string | null | Promise<string | null>);
+  /** How often, in ms, a keyless device (trial / free tier / expired) re-reports
+   *  itself while the host process keeps running. Defaults to 6 hours; pass
+   *  `null` to opt out and drive `reportKeylessState` yourself.
+   *
+   *  Without a cadence the beacon goes out once at startup, so a resident host —
+   *  an Electron app, a tray app, a long-lived service — reports itself once and
+   *  then looks dead to the dashboard for as long as it runs. `reportKeylessState`
+   *  still debounces to one request per 24h, so a tighter interval here costs
+   *  nothing on the wire. Not part of the normalized config. */
+  keylessHeartbeatMs?: number | null;
 }
 
 export interface KeylightConfig {

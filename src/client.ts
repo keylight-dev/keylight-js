@@ -33,6 +33,23 @@ interface ValidateResp { valid: boolean; license_expires_at?: number | null; lea
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const nowSecs = () => Math.floor(Date.now() / 1000);
 
+/** Default keyless heartbeat cadence. Six hours matches the Worker's
+ *  server-side gate on keyless writes, so a tick never arrives before the
+ *  server is willing to record it. */
+export const DEFAULT_KEYLESS_HEARTBEAT_MS = 6 * 60 * 60 * 1000;
+
+/** The beacon state a license state calls for, or null when it calls for none.
+ *  Licensed and Limited report liveness through `/validate`, not the beacon;
+ *  Invalid is a denial, not a device to count. */
+function keylessStateFor(s: LicenseState): KeylessState | null {
+  switch (s.kind) {
+    case "Trial": return "trial";
+    case "FreeTier": return "free_tier";
+    case "Expired": return "expired";
+    default: return null;
+  }
+}
+
 /** Debounce window for `activeRevalidate` (parity with Swift `activeRevalidateDebounce`). */
 const ACTIVE_REVALIDATE_DEBOUNCE_MS = 60_000;
 
@@ -66,6 +83,9 @@ export class Keylight {
    *  revalidates. Null rather than 0 because `monotonicNow()` starts near zero, so 0
    *  would read as "just ran" and swallow the very first call of the process. */
   private lastActiveRevalidateAt: number | null = null;
+  /** Keyless heartbeat cadence in ms, or null when the host opted out. */
+  private readonly keylessHeartbeatMs: number | null;
+  private keylessHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(options: KeylightOptions) {
     this.cfg = normalizeConfig(options);
@@ -74,6 +94,50 @@ export class Keylight {
     this.store = options.store ?? new MemoryStore(); // replaced during hydrate() if no store given
     this.machineId = options.machineId ?? readMachineId;
     this.stableDeviceId = options.stableDeviceId;
+    this.keylessHeartbeatMs = options.keylessHeartbeatMs === undefined
+      ? DEFAULT_KEYLESS_HEARTBEAT_MS
+      : options.keylessHeartbeatMs;
+  }
+
+  /**
+   * Start re-reporting the keyless beacon on the configured cadence. Idempotent,
+   * and a no-op when the host passed `keylessHeartbeatMs: null`. `checkOnLaunch`
+   * calls this for you; call it directly if your app never does.
+   *
+   * Each tick reads the current state and beacons only when the device is
+   * keyless — a licensed device sends nothing, and its liveness rides on
+   * `/validate` instead. The timer keeps running across that boundary so a
+   * license that lapses resumes beaconing without the app doing anything.
+   *
+   * The timer is `unref`'d where the runtime supports it (Node/Bun), so a
+   * six-hour cadence never keeps a one-shot script alive.
+   */
+  startKeylessHeartbeat(): void {
+    if (this.keylessHeartbeatTimer !== null) return;
+    if (this.keylessHeartbeatMs === null || this.keylessHeartbeatMs <= 0) return;
+    const timer = setInterval(() => { void this.keylessHeartbeatTick(); }, this.keylessHeartbeatMs);
+    // Node/Bun only; browsers and Workers return a plain handle with no unref.
+    (timer as { unref?: () => void }).unref?.();
+    this.keylessHeartbeatTimer = timer;
+  }
+
+  /** Stop the keyless heartbeat. Idempotent. Call it when disposing a client so
+   *  a long-lived process doesn't accumulate timers. */
+  stopKeylessHeartbeat(): void {
+    if (this.keylessHeartbeatTimer === null) return;
+    clearInterval(this.keylessHeartbeatTimer);
+    this.keylessHeartbeatTimer = null;
+  }
+
+  private async keylessHeartbeatTick(): Promise<void> {
+    try {
+      await this.ensureHydrated();
+      const ks = keylessStateFor(this.state());
+      if (ks) await this.reportKeylessState(ks);
+    } catch {
+      // A beacon is best-effort telemetry; a tick must never surface an
+      // unhandled rejection into the host app's process.
+    }
   }
 
   /** Hydrate the in-memory cache from the (possibly async) store. Idempotent. */
@@ -324,6 +388,9 @@ export class Keylight {
    */
   async checkOnLaunch(): Promise<void> {
     await this.ensureHydrated();
+    // Before the stored-license guard on purpose: a keyless device is exactly
+    // the one that needs the cadence, and it returns early below.
+    this.startKeylessHeartbeat();
     if (!this.hasStoredLicense()) return;
     await this.forcedRevalidate();
   }
