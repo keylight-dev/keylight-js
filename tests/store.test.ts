@@ -25,6 +25,7 @@ test("account keys match the Rust contract (exhaustive)", () => {
     FREE_TIER_INSTANCE_ID: "free_tier_instance_id",
     KEYLESS_LAST_STATE: "keyless_last_state",
     LAST_KEYLESS_PING_AT: "last_keyless_ping_at",
+    PRODUCT_CONFIG: "product_config",
   });
 });
 

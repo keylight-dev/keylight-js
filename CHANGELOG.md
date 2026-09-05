@@ -5,6 +5,57 @@ All notable changes to the Keylight JavaScript/TypeScript SDK are documented her
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **The trial length is the server's, not the build's.** A tenant could set a
+  trial length in the dashboard and nothing happened to their JS app:
+  `trialDurationDays` and `freeTierEnabled` were read straight off the
+  normalized config wherever a trial decision was made, so the value passed to
+  `new Keylight({...})` was the only one that ever applied. New
+  `effectiveTrialDurationDays()` and `effectiveFreeTierEnabled()` resolve
+  **server value → local seed → 0**, and `checkTrial()`, `state()` and
+  `productFreeTierEnabled()` now read those. The option stays a *seed*,
+  deliberately: a brand-new install genuinely has nothing else, and removing it
+  would make first-launch behaviour depend on the network.
+- **The settings ride on calls already being made**, so launch-time network I/O
+  stays at zero. `validate` covers every licensed install and the keyless beacon
+  covers every unlicensed one; both responses now carry `trial_duration_days`
+  and `free_tier_enabled`, and both are absorbed. `fetchConfig()` reads the
+  dedicated `GET /{tenant}/{product}/config` route for hosts that want an
+  explicit refresh — it is **not** on the launch path, and a test asserts that
+  resolving state never touches it. `fetchConfig()` never throws.
+- **`sdk_trial_duration_days` on activate and validate** — the length the build
+  was *configured* with, not the effective one, since echoing the server's own
+  number back diagnoses nothing. It catches the ordinary mistake of a 30-day
+  build against a 14-day dashboard setting. Diagnostic only: the server must
+  never gate on it, because a patched client sends whatever its author wants.
+- `ACCOUNT.PRODUCT_CONFIG` (`"product_config"`), matching the Rust `account`
+  module, and the `CachedProductConfig` / `ProductConfigFields` types.
+
+### Fixed
+
+- **`0` is a real setting and absence is not zero.** The cached pair is stored
+  as optional fields and merged one at a time, so a worker that sends neither
+  field leaves what the install already learned alone, a server `0` survives a
+  relaunch as `0` rather than falling back to the seed, and a server
+  `free_tier_enabled: false` is not mistaken for "never heard".
+- **`startTrial()` stamps the clock even at a zero duration.** Once the duration
+  is server-owned, `0` is indistinguishable from "the config has not arrived
+  yet", so bailing out left no start timestamp for a later-arriving duration to
+  measure and the user never got the trial their tenant enabled. The stamp
+  grants nothing on its own. An existing stamp is never overwritten, so enabling
+  a trial 60 days after an install does not hand it a fresh window.
+
+### Notes
+
+- No breaking change: object literals are name-based, so nothing in
+  `KeylightOptions` moved or was added.
+- 157 → 173 tests.
+- Ports the contract shipped in `keylight-cpp` 0.2.0/0.2.1; see that repo's
+  `docs/superpowers/specs/2026-09-05-trial-parity-handoff.md`.
+
 ## [0.2.0] - 2026-09-04
 
 ### Added
