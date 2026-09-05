@@ -10,6 +10,10 @@ export const ACCOUNT = {
   FREE_TIER_INSTANCE_ID: "free_tier_instance_id",
   KEYLESS_LAST_STATE: "keyless_last_state",
   LAST_KEYLESS_PING_AT: "last_keyless_ping_at",
+  /** Last product configuration heard from the server (trial length, free tier).
+   *  Cached so an offline launch uses the tenant's real settings rather than
+   *  falling back to the compiled-in seed. */
+  PRODUCT_CONFIG: "product_config",
 } as const;
 
 /** Async key/value persistence. Implement to back the SDK with any runtime store. */

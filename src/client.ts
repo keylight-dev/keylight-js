@@ -10,6 +10,7 @@ import { ClientError, ServerError, RateLimited, TimeoutError, NetworkError, Inva
 import { lifecycleEvent, resolveState, type LicenseState, type LicenseLifecycleEvent, type TrialStatus, type KeylessState } from "./state.js";
 import { clockManipulated } from "./clock.js";
 import { machineHash, readMachineId } from "./machine.js";
+import { type CachedProductConfig, type ProductConfigFields, isEmptyConfig, mergeConfig, readConfigFields } from "./productConfig.js";
 
 export interface ActivationResult {
   activated: boolean;
@@ -28,7 +29,7 @@ interface ActivateResp {
 }
 
 export interface ValidationResult { valid: boolean; lease: Lease | null; licenseExpiresAt: number | null; error: string | null; }
-interface ValidateResp { valid: boolean; license_expires_at?: number | null; lease?: Lease | null; error?: string | null; }
+interface ValidateResp { valid: boolean; license_expires_at?: number | null; lease?: Lease | null; error?: string | null; trial_duration_days?: number | null; free_tier_enabled?: boolean | null; }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const nowSecs = () => Math.floor(Date.now() / 1000);
@@ -169,6 +170,19 @@ export class Keylight {
     if (this.cfg.sdkKey) h.push(["X-Keylight-SDK-Key", this.cfg.sdkKey]);
     return h;
   }
+  /**
+   * Report the trial length this build was **compiled with** — the seed, not the
+   * effective value. Echoing the server's own number back diagnoses nothing; the
+   * seed catches the ordinary mistake of a 30-day build running against a
+   * 14-day dashboard setting, in a minute rather than a week of support tickets.
+   *
+   * Diagnostic only. The server must never gate on it: a patched client sends
+   * whatever its author wants, so a match proves nothing about the client.
+   */
+  private addSeedTrialTelemetry(map: Record<string, unknown>): void {
+    map.sdk_trial_duration_days = this.cfg.trialDurationDays;
+  }
+
   private async bodyWithTelemetry(map: Record<string, unknown>): Promise<string> {
     await applyTelemetry(map, this.cfg.appVersion);
     return JSON.stringify(map);
@@ -225,6 +239,7 @@ export class Keylight {
 
     let res: { status: number; body: string };
     try {
+      this.addSeedTrialTelemetry(map);
       res = await this.post("activate", await this.bodyWithTelemetry(map));
     } catch (e) {
       if (e instanceof ClientError) return fail(e.message || `Activation failed (HTTP ${e.status})`);
@@ -256,11 +271,16 @@ export class Keylight {
     const mh = await this.currentMachineHash();
     if (mh) map.machine_hash = mh;
     let res: { status: number; body: string };
+    this.addSeedTrialTelemetry(map);
     try { res = await this.post("validate", await this.bodyWithTelemetry(map), [422]); }
     catch (e) { if (e instanceof ClientError) return { valid: false, lease: null, licenseExpiresAt: null, error: e.message || `Validation failed (HTTP ${e.status})` }; throw e; }
 
     let resp: ValidateResp;
     try { resp = JSON.parse(res.body); } catch { throw new InvalidResponse(); }
+    // Absorb before the outcome branches below: the settings are valid
+    // regardless of whether the licence itself validated, and an early return
+    // would drop them for exactly the installs that keep failing validation.
+    await this.absorbConfigFields(readConfigFields(resp));
     if (resp.lease) this.verifyOrReject(resp.lease);
 
     if (!resp.valid) {
@@ -360,7 +380,7 @@ export class Keylight {
     const lease = this.offlineCapExceeded() ? null : this.rawLease();
     let status: string | null = null, current = false;
     if (lease) { const r = this.verify(lease); status = isTrusted(r) ? lease.status : null; current = !r.expired; }
-    return resolveState(status, current, this.hasStoredLicense(), this.checkTrial(), this.cfg.freeTierEnabled);
+    return resolveState(status, current, this.hasStoredLicense(), this.checkTrial(), this.effectiveFreeTierEnabled());
   }
   getState(): LicenseState { return this.state(); }
 
@@ -482,11 +502,72 @@ export class Keylight {
     return `https://portal.keylight.dev/p/${this.cfg.tenantId}/upgrade/${this.cfg.productId}?key=${encodeURIComponent(key)}`;
   }
 
+  // --- server-owned product config ---
+
+  /**
+   * Trial length actually in force: server value → local seed → 0.
+   *
+   * `trialDurationDays` on the options is demoted to a *seed*, used only before
+   * this install has ever heard from the server. It is deliberately not removed:
+   * a brand-new install genuinely has nothing else, and dropping it would make
+   * first-launch behaviour depend on the network.
+   */
+  effectiveTrialDurationDays(): number {
+    const cached = this.cachedProductConfig().trialDurationDays;
+    return typeof cached === "number" ? cached : this.cfg.trialDurationDays;
+  }
+
+  /** Free-tier flag actually in force: server value → local seed → false. */
+  effectiveFreeTierEnabled(): boolean {
+    const cached = this.cachedProductConfig().freeTierEnabled;
+    return typeof cached === "boolean" ? cached : this.cfg.freeTierEnabled;
+  }
+
+  /**
+   * Explicitly refresh the product config from `GET /{tenant}/{product}/config`.
+   *
+   * **Not for the launch path.** The same two settings ride on `validate` (every
+   * licensed install) and on the keyless beacon (every unlicensed one), which is
+   * what keeps launch-time network I/O at zero. This exists for hosts that want
+   * an explicit refresh — a settings pane, a manual "check now" — and for tests.
+   *
+   * Never throws. A refresh that cannot reach the network leaves the last known
+   * settings in place rather than falling back to the seed.
+   */
+  async fetchConfig(): Promise<void> {
+    await this.ensureHydrated();
+    const out = await this.transport.get(this.apiUrl("config"), this.headers()).catch(() => null);
+    if (!out || out.kind !== "response" || out.status !== 200) return;
+    try {
+      await this.absorbConfigFields(readConfigFields(JSON.parse(out.body)));
+    } catch {
+      // Unparseable body: keep what we have.
+    }
+  }
+
+  /** Merge server-sent settings into the cache. See `mergeConfig`. */
+  protected async absorbConfigFields(fields: ProductConfigFields): Promise<void> {
+    if (isEmptyConfig(fields)) return;
+    const next = mergeConfig(this.cachedProductConfig(), fields);
+    await this.setStr(ACCOUNT.PRODUCT_CONFIG, JSON.stringify(next));
+  }
+
+  protected cachedProductConfig(): CachedProductConfig {
+    const raw = this.getStr(ACCOUNT.PRODUCT_CONFIG);
+    if (raw === null) return {};
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      return typeof parsed === "object" && parsed !== null ? (parsed as CachedProductConfig) : {};
+    } catch {
+      return {};
+    }
+  }
+
   /** Trial status from the persisted trial-start timestamp (parity with Rust check_trial). */
   checkTrial(): TrialStatus {
     const s = this.getNum(ACCOUNT.TRIAL_START);
     if (s === null) return { kind: "not_started" };
-    const left = this.cfg.trialDurationDays - Math.floor((nowSecs() - s) / 86400);
+    const left = this.effectiveTrialDurationDays() - Math.floor((nowSecs() - s) / 86400);
     return left > 0 ? { kind: "active", daysLeft: left } : { kind: "expired" };
   }
 
@@ -508,6 +589,27 @@ export class Keylight {
     this.subscribers.forEach((fn) => { try { fn(s); } catch { /* non-fatal */ } });
   }
 
+  /**
+   * Stamp the trial start time, **unconditionally** — including when the
+   * effective duration is currently 0.
+   *
+   * This looks wrong and is not. Once the duration is server-owned, `0` is
+   * indistinguishable from "the config has not arrived yet", so returning early
+   * at a zero duration leaves no start timestamp for a later-arriving duration
+   * to measure, and the user never gets the trial their tenant enabled. The
+   * stamp grants nothing on its own: `checkTrial()` still reports no trial while
+   * the effective duration is 0. It only fixes *when* the window starts if a
+   * duration arrives later.
+   *
+   * An existing stamp is never overwritten, so enabling a trial months after an
+   * install does not hand it a fresh window — otherwise it would be farmable by
+   * reinstalling.
+   *
+   * The anonymous instance id is minted at the same point for the same reason:
+   * nothing calls `startTrial()` a second time once the duration lands, so
+   * minting it only at a non-zero duration would lose attribution for any
+   * install that started offline.
+   */
   async startTrial(): Promise<void> {
     await this.ensureHydrated();
     if (this.getStr(ACCOUNT.TRIAL_START) === null) await this.setStr(ACCOUNT.TRIAL_START, String(nowSecs()));
@@ -568,7 +670,14 @@ export class Keylight {
     const body = await this.bodyWithTelemetry(map);
     const out = await this.post("keyless", body).catch(() => null);
     // post() returns only on 200; on success record state + ping (parity with Rust).
-    if (out) { await this.setStr(ACCOUNT.KEYLESS_LAST_STATE, state); await this.setStr(ACCOUNT.LAST_KEYLESS_PING_AT, String(nowSecs())); }
+    if (out) {
+      // The beacon response carries the product config for unlicensed installs —
+      // the only route that reaches them. A body that will not parse is ignored:
+      // the beacon is best-effort and must not disturb the debounce bookkeeping.
+      try { await this.absorbConfigFields(readConfigFields(JSON.parse(out.body))); } catch { /* non-JSON body */ }
+      await this.setStr(ACCOUNT.KEYLESS_LAST_STATE, state);
+      await this.setStr(ACCOUNT.LAST_KEYLESS_PING_AT, String(nowSecs()));
+    }
     return out !== null;
   }
 
@@ -581,7 +690,7 @@ export class Keylight {
   }
 
   /** Whether the product has the free tier enabled. Mirrors Swift `productFreeTierEnabled()`. */
-  productFreeTierEnabled(): boolean { return this.cfg.freeTierEnabled; }
+  productFreeTierEnabled(): boolean { return this.effectiveFreeTierEnabled(); }
 
   /** Instance-method form of key-format validation (uses the configured keyPrefix). Mirrors Swift `isValidKeyFormat`. */
   isValidKeyFormat(key: string): boolean { return validateKeyFormat(key, this.cfg.keyPrefix); }

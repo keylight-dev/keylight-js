@@ -16,4 +16,5 @@ export { detectPlatform } from "./telemetry.js";
 export { SDK_VERSION } from "./version.js";
 export type { KeylightOptions } from "./config.js";
 export { validateKeyFormat } from "./config.js";
+export type { CachedProductConfig, ProductConfigFields } from "./productConfig.js";
 export * from "./errors.js";
