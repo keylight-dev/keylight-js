@@ -448,11 +448,25 @@ export class Keylight {
     } catch (e) {
       if (!isDefinitiveLaunchDeny(e)) return; // transient — keep last-known-good, bounded by maxOfflineDays.
     }
-    // Read the "previous" snapshot HERE, not before the call: every path on which
-    // validate() throws does so before it writes anything (post() failure, JSON.parse,
-    // verifyOrReject), so this is still the pre-call state — and skipping it on the
-    // success path avoids a redundant state() (lease JSON.parse + ed25519 verify) on
-    // what is a per-window-focus hot path for activeRevalidate.
+    await this.denyLease();
+  }
+
+  /**
+   * Drop the cached lease and publish the resulting lifecycle transition — the deny
+   * side of a THROWN definitive rejection (`InvalidResponse`, or `LeaseVerificationFailed`
+   * with a known kid; see `isDefinitiveLaunchDeny`). The other kind of definitive
+   * rejection — a non-throwing `!resp.valid` response (e.g. HTTP 422 revoke) — is already
+   * reconciled into the store by `validate()` itself and never reaches this method.
+   *
+   * Read the "previous" snapshot HERE, not before the call: every path on which
+   * validate() throws does so before it writes anything (post() failure, JSON.parse,
+   * verifyOrReject), so this is still the pre-call state.
+   *
+   * Shared by `forcedRevalidate` (checkOnLaunch/activeRevalidate) and
+   * `refreshAfterUpgrade`'s poll loop, so a forged/tampered lease denies identically
+   * everywhere it can be encountered instead of each caller re-deriving the triage.
+   */
+  private async denyLease(): Promise<void> {
     const prevState = this.state();
     const prevExpiry = this.getNum(ACCOUNT.LICENSE_EXPIRES_AT);
     await this.del(ACCOUNT.LEASE);
@@ -494,6 +508,69 @@ export class Keylight {
       return;
     this.lastActiveRevalidateAt = now;
     await this.forcedRevalidate();
+  }
+
+  /**
+   * Poll-revalidate briefly after an upgrade so new entitlements show up without waiting
+   * for the normal refresh cadence. Payment webhooks (Stripe/Polar/etc.) can lag a few
+   * seconds behind the checkout redirect; call this right after the upgrade flow returns
+   * so the UI can reflect the new plan as soon as the server has it, instead of the user
+   * seeing stale entitlements until the next `activeRevalidate`/`refreshIfNeeded`. Mirrors
+   * the Swift SDK's `refreshAfterUpgrade`.
+   *
+   * `timeout` and `pollInterval` are in MILLISECONDS (this SDK's convention — see
+   * `ACTIVE_REVALIDATE_DEBOUNCE_MS` — unlike the Swift SDK, which takes seconds).
+   * Defaults: poll every 2s, give up after 30s. `pollInterval` is clamped to a 100ms
+   * floor. Pass an `AbortSignal` to cancel early (e.g. the caller navigated away).
+   *
+   * Returns `true` as soon as either the entitlement set or the license state differs
+   * from what it was when this was called, or once the caller's signal aborts or the
+   * timeout elapses without one. Returns `false` immediately, with zero network calls,
+   * when there is no stored license to refresh.
+   *
+   * A definitive rejection landing mid-poll always counts as a state change, however it
+   * arrives — shares `forcedRevalidate`'s triage (`isDefinitiveLaunchDeny`) rather than
+   * blanket-swallowing every throw:
+   *  - A non-throwing `!resp.valid` response (e.g. HTTP 422 revoke) is reconciled into
+   *    the store by `validate()` itself.
+   *  - A THROWN definitive deny (`InvalidResponse` malformed body, or
+   *    `LeaseVerificationFailed` with a known kid — a tampered/forged lease) is denied
+   *    via the same `denyLease()` path `forcedRevalidate` uses, so it isn't mistaken for
+   *    a transient blip and silently polled past until timeout.
+   *  - Everything else genuinely transient (network blip, 5xx, unknown-kid signature —
+   *    indistinguishable from a legitimate key rotation) is swallowed and polling
+   *    continues; only a genuine change, or timeout/abort, ends the loop.
+   *
+   * A seat-only upgrade that doesn't change entitlements or state (e.g. adding a seat to
+   * a plan that already has the entitlements it grants) won't be observed as a change —
+   * this only detects entitlement/state transitions, not arbitrary server-side deltas.
+   */
+  async refreshAfterUpgrade(timeout = 30_000, pollInterval = 2_000, signal?: AbortSignal): Promise<boolean> {
+    await this.ensureHydrated();
+    if (!this.hasStoredLicense()) return false;
+
+    const entKey = () => JSON.stringify([...(this.cachedLease?.entitlements ?? [])].sort());
+    const beforeEntitlements = entKey();
+    const beforeState = JSON.stringify(this.state());
+    const poll = Math.max(pollInterval, 100);
+    const deadline = monotonicNow() + timeout;
+
+    for (;;) {
+      try {
+        await this.validate();
+      } catch (e) {
+        // Same triage forcedRevalidate uses: a THROWN definitive deny (malformed body,
+        // or a tampered known-kid lease) must deny here too, not just get swallowed as
+        // if it were a network blip — else a forged lease mid-poll would silently poll
+        // past it until timeout instead of resolving true on the state change.
+        if (isDefinitiveLaunchDeny(e)) await this.denyLease();
+        // else genuinely transient — keep polling rather than giving up on a blip.
+      }
+      if (entKey() !== beforeEntitlements || JSON.stringify(this.state()) !== beforeState) return true;
+      if (signal?.aborted) return false;
+      if (monotonicNow() >= deadline) return false;
+      await sleep(poll);
+    }
   }
 
   get upgradeUrl(): string | null {
