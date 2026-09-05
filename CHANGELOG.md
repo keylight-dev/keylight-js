@@ -5,6 +5,21 @@ All notable changes to the Keylight JavaScript/TypeScript SDK are documented her
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`refreshAfterUpgrade(timeout?, pollInterval?, signal?)` — brief poll-revalidate
+  right after an upgrade.** Payment webhooks (Stripe/Polar/etc.) can lag a few seconds
+  behind the checkout redirect, so a naive single `validate()` right after upgrade can
+  still see the old entitlements. This re-validates every `pollInterval` (default 2s, in
+  **milliseconds** — this SDK's convention, unlike the Swift SDK's seconds) up to
+  `timeout` (default 30s), and resolves `true` as soon as the license's entitlements or
+  state change from what they were when it was called — including a definitive rejection
+  landing mid-poll, since `validate()` reconciles that into a state change on its own.
+  Resolves `false` on timeout, on an aborted `AbortSignal`, or immediately (no network
+  calls) when there is no stored license. Mirrors the Swift SDK's `refreshAfterUpgrade`.
+
 ## [0.3.0] - 2026-09-05
 
 ### Added

@@ -143,6 +143,7 @@ For a browser `<script>` tag, the IIFE bundle exposes the namespace as `window.K
 | `refreshIfNeeded() → ValidationResult \| null` | Validates only if due (debounce 5 min, stale 6 h, or within 24 h of expiry). Safe to call often. |
 | `checkOnLaunch()` | Always validates when a license is stored, else no-op. Never throws: a definitive rejection downgrades, a network blip keeps last-known-good. |
 | `activeRevalidate()` | Same forced check for active use (focus / popover open), debounced 60 s in memory. Call it so a revoke lands in a long-running app without a relaunch. |
+| `refreshAfterUpgrade(timeout?, pollInterval?, signal?) → boolean` | Polls `validate()` (ms intervals, default 2 s, up to a 30 s timeout) right after an upgrade, resolving `true` as soon as entitlements or state change — covers payment-webhook lag. |
 
 ## License States
 
@@ -223,6 +224,22 @@ There are **no background timers**. The host drives refresh on launch and on mea
 await kl.checkOnLaunch();     // always validate, on startup
 await kl.activeRevalidate();  // on focus / popover open — forced, debounced 60 s
 await kl.refreshIfNeeded();   // cheap catch-all after purchase / resume
+```
+
+Wire `activeRevalidate()` up to the page's visibility so a background tab catches up the
+moment it's foregrounded:
+
+```ts
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") void kl.activeRevalidate();
+});
+```
+
+Right after an upgrade completes, poll briefly instead of waiting for the next cadence —
+payment webhooks can lag a few seconds behind the checkout redirect:
+
+```ts
+const upgraded = await kl.refreshAfterUpgrade(); // polls up to 30 s, 2 s apart
 ```
 
 Trials and free tier are local and offline-first:
