@@ -21,9 +21,9 @@ export interface CachedProductConfig {
  * The wire shape, as it appears in the `/config` response body and riding on
  * `validate` and keyless-beacon responses.
  *
- * The signature fields are part of the frozen wire contract but are not
- * verified by this SDK yet — they are accepted and ignored so that adding
- * verification later is a change to this module alone.
+ * The signature fields are part of the frozen wire contract. They are checked
+ * by `verifyConfig` when `requireSignedConfig` is set, and carried but
+ * unenforced otherwise.
  */
 export interface ProductConfigFields {
   trial_duration_days?: number | null;
@@ -41,6 +41,13 @@ export function readConfigFields(body: unknown): ProductConfigFields {
   const out: ProductConfigFields = {};
   if (typeof o.trial_duration_days === "number") out.trial_duration_days = o.trial_duration_days;
   if (typeof o.free_tier_enabled === "boolean") out.free_tier_enabled = o.free_tier_enabled;
+  // The signature rides with the fields on every route that delivers them. A
+  // route that read the settings but dropped their signature would be a way
+  // around `requireSignedConfig`, so it is read here rather than per-caller.
+  if (typeof o.issued_at === "number") out.issued_at = o.issued_at;
+  if (typeof o.expires_at === "number") out.expires_at = o.expires_at;
+  if (typeof o.kid === "string") out.kid = o.kid;
+  if (typeof o.signature === "string") out.signature = o.signature;
   return out;
 }
 

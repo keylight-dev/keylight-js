@@ -13,6 +13,23 @@ export interface KeylightOptions {
   maxOfflineDays?: number | null;
   trialDurationDays?: number;
   freeTierEnabled?: boolean;
+  /**
+   * Require server-owned product settings to carry a valid Ed25519 signature
+   * before they are cached. Defaults to `false`.
+   *
+   * Off by default on purpose: the worker signs a product's settings only once
+   * that product has a trial length configured, and every other product is
+   * served unsigned. Turning this on for one of those would reject legitimate
+   * responses and pin the install to its compiled-in seed.
+   *
+   * Trust is rooted in `trustedKeys`, which you ship with your app. The SDK
+   * deliberately does not fetch a keyset at runtime: keys fetched over the same
+   * channel that serves the config would let anyone able to forge one forge the
+   * other. The cost is that rotating to a new `kid` leaves already-shipped
+   * builds on their last cached settings until they update — a freeze, not a
+   * failure.
+   */
+  requireSignedConfig?: boolean;
   appVersion?: string;
   keyPrefix?: string;
   deviceId?: string;        // overrides the persisted free-tier/keyless instance id
@@ -54,6 +71,7 @@ export interface KeylightConfig {
   maxOfflineDays: number | null;
   trialDurationDays: number;
   freeTierEnabled: boolean;
+  requireSignedConfig: boolean;
   appVersion?: string;
   keyPrefix?: string;
   deviceId?: string;
@@ -70,6 +88,7 @@ export function normalizeConfig(o: KeylightOptions): KeylightConfig {
     maxOfflineDays: o.maxOfflineDays === undefined ? 15 : o.maxOfflineDays,
     trialDurationDays: o.trialDurationDays ?? 14, // Rust builder default; harmless until startTrial() is called
     freeTierEnabled: o.freeTierEnabled ?? false,
+    requireSignedConfig: o.requireSignedConfig ?? false,
     appVersion: o.appVersion,
     keyPrefix: o.keyPrefix,
     deviceId: o.deviceId,

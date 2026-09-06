@@ -1,7 +1,7 @@
 import { type KeylightOptions, type KeylightConfig, normalizeConfig, validateKeyFormat } from "./config.js";
 import { type LicenseStore, MemoryStore, ACCOUNT, makeDefaultStore } from "./store.js";
 import { type Transport, type Header, FetchTransport } from "./transport.js";
-import { verifyLease, isTrusted, SKEW_SECONDS, type VerifyResult } from "./verifier.js";
+import { verifyLease, verifyConfig, isTrusted, SKEW_SECONDS, type VerifyResult } from "./verifier.js";
 import { type Lease } from "./lease.js";
 import { randomUuid } from "./device.js";
 import { applyTelemetry } from "./telemetry.js";
@@ -625,6 +625,24 @@ export class Keylight {
   /** Merge server-sent settings into the cache. See `mergeConfig`. */
   protected async absorbConfigFields(fields: ProductConfigFields): Promise<void> {
     if (isEmptyConfig(fields)) return;
+
+    // The one place signatures are checked, and deliberately the only one. The
+    // settings ride on `/config`, on `validate`, and on the keyless beacon;
+    // verifying at any single route would leave the others as an
+    // unauthenticated way to write the same cache. Authentication is a property
+    // of the fields, not of the endpoint they arrived on.
+    //
+    // An unsigned response fails exactly as a badly signed one does — otherwise
+    // stripping the signature would be enough to bypass the check. Rejection
+    // keeps whatever is cached: fall back to the seed, never to what the server
+    // claimed.
+    if (
+      this.cfg.requireSignedConfig
+      && !verifyConfig(fields, this.cfg.tenantId, this.cfg.productId, this.cfg.trustedKeys, nowSecs(), SKEW_SECONDS)
+    ) {
+      return;
+    }
+
     const next = mergeConfig(this.cachedProductConfig(), fields);
     await this.setStr(ACCOUNT.PRODUCT_CONFIG, JSON.stringify(next));
   }

@@ -5,10 +5,39 @@ All notable changes to the Keylight JavaScript/TypeScript SDK are documented her
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] - 2026-09-06
 
 ### Added
 
+- **`requireSignedConfig` — Ed25519 verification of server-owned product
+  settings.** The Keylight worker has signed the trial length and free-tier flag
+  on every route that delivers them since 2026-09-06; nothing in this SDK
+  checked those signatures. `verifyConfig` now does, over the payload format
+  shared byte-for-byte with the Swift, C#, C++ and Rust SDKs.
+
+  **Off by default, and it should stay off unless you know your product is
+  signed.** The worker signs a product's settings only once that product has a
+  trial length configured in the dashboard; every other product is served
+  unsigned, and enabling this against one of those would reject legitimate
+  responses and pin the install to the seed you shipped with.
+
+  When enabled, settings that do not verify are **never cached** — the SDK keeps
+  your seed rather than trusting what the server claimed. The check lives at the
+  single point where settings are merged, so no route can write settings around
+  it: `/config`, `validate` and the keyless beacon all pass through it.
+
+  `readConfigFields` now carries the four signature fields it previously
+  dropped. Without that every route looked permanently unsigned.
+
+  Trust is rooted in the `trustedKeys` you ship with your app. The SDK does not
+  fetch a keyset at runtime, on purpose: keys fetched over the same connection
+  that serves the settings would let anyone able to forge one forge the other.
+  The trade-off is that rotating to a new key id leaves builds already in the
+  wild on their last known settings until they update — they freeze, they do not
+  break.
+
+  Verification is pinned by a golden vector captured from the live worker, the
+  same one the other SDKs pin.
 - **`refreshAfterUpgrade(timeout?, pollInterval?, signal?)` — brief poll-revalidate
   right after an upgrade.** Payment webhooks (Stripe/Polar/etc.) can lag a few seconds
   behind the checkout redirect, so a naive single `validate()` right after upgrade can
@@ -19,6 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   landing mid-poll, since `validate()` reconciles that into a state change on its own.
   Resolves `false` on timeout, on an aborted `AbortSignal`, or immediately (no network
   calls) when there is no stored license. Mirrors the Swift SDK's `refreshAfterUpgrade`.
+
 
 ## [0.3.0] - 2026-09-05
 
