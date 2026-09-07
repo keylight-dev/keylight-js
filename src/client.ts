@@ -593,9 +593,12 @@ export class Keylight {
       // Never sleep past the deadline: the last wait is capped to what is left, and
       // an abort mid-sleep wakes it immediately rather than after a full interval.
       // Neither wake-up starts another poll: no network call begins past `timeout`.
-      await abortableSleep(Math.min(poll, remaining), signal);
-      if (signal?.aborted) return false;
-      if (monotonicNow() >= deadline) return false;
+      // When the cap applies this IS the last wait — decided here rather than by
+      // re-reading the clock afterwards, because a timer can fire a hair early
+      // relative to `monotonicNow()` and that hair used to buy one extra poll.
+      const last = remaining <= poll;
+      await abortableSleep(last ? remaining : poll, signal);
+      if (last || signal?.aborted) return false;
     }
   }
 
