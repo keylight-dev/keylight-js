@@ -22,12 +22,13 @@ export interface KeylightOptions {
    * served unsigned. Turning this on for one of those would reject legitimate
    * responses and pin the install to its compiled-in seed.
    *
-   * Trust is rooted in `trustedKeys`, which you ship with your app. The SDK
-   * deliberately does not fetch a keyset at runtime: keys fetched over the same
-   * channel that serves the config would let anyone able to forge one forge the
-   * other. The cost is that rotating to a new `kid` leaves already-shipped
-   * builds on their last cached settings until they update — a freeze, not a
-   * failure.
+   * Verification trusts only the keys in `trustedKeys`. Pin them at build time
+   * when you enable this: `fetchKeyset` is a bootstrapping convenience, not a
+   * trust root — a keyset fetched over the same connection that serves the
+   * config can be forged by the same attacker, so a signature checked against
+   * it proves nothing. The cost of pinning is that rotating to a new `kid`
+   * leaves already-shipped builds on their last cached settings until they
+   * update — a freeze, not a failure.
    */
   requireSignedConfig?: boolean;
   appVersion?: string;

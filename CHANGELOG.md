@@ -5,6 +5,30 @@ All notable changes to the Keylight JavaScript/TypeScript SDK are documented her
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-09-07
+
+### Fixed
+
+- **`refreshAfterUpgrade` now honours its `AbortSignal` and its `timeout` while
+  asleep.** The wait between polls was a bare `setTimeout`: the signal was only
+  read between iterations, so an abort landed up to a full `pollInterval` late,
+  and a `pollInterval` longer than what remained of `timeout` ran the method past
+  its own deadline. The sleep now wakes the moment the signal fires, the final
+  wait is capped to the time left, and no poll starts once the deadline has
+  passed. An already-aborted signal makes **zero** network calls rather than one
+  last `validate()`. The timer is also `unref`'d on Node/Bun, so a pending poll
+  no longer keeps a one-shot script alive.
+- **README documents `requireSignedConfig`.** The 0.4.0 flag was in the
+  changelog and the types but not in the README, whose quick start fetches the
+  keyset at runtime with `fetchKeyset(...)` — the one thing you must not rely on
+  once the flag is on. The Configuration Reference now covers the flag (off by
+  default; enable only for a product with a trial length configured in the
+  dashboard; unverified settings are never cached and the seed is kept) and
+  states that enabling it means pinning `trustedKeys` at build time, because a
+  keyset fetched over the same connection as the settings can be forged by the
+  same attacker. The `KeylightOptions` doc comment says the same thing instead
+  of claiming the SDK never fetches a keyset.
+
 ## [0.4.0] - 2026-09-06
 
 ### Added

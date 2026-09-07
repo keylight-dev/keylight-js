@@ -137,8 +137,48 @@ test("(5) an already-aborted signal returns false quickly without polling furthe
   const elapsed = performance.now() - start;
 
   expect(result).toBe(false);
-  expect(calls(), "must not poll repeatedly once aborted").toBeLessThanOrEqual(1);
+  expect(calls(), "an already-aborted signal must make zero network calls").toBe(0);
   expect(elapsed, "must return well before the 1s timeout").toBeLessThan(500);
+});
+
+test("(5b) aborting mid-sleep wakes the poll loop promptly instead of after a full interval", async () => {
+  const store = await seededLicensedStore(60, ["pro"]);
+  // Same entitlements every time, so nothing but the abort can end this early.
+  const { t, calls } = countingTransport(200, okBodyWithEntitlements(["pro"]));
+  const kl = new Keylight({ tenantId: "t", productId: "p", trustedKeys: TRUSTED_KEYS, transport: t, store });
+  await kl.load();
+  const controller = new AbortController();
+
+  // Long timeout, long poll interval: without a cancellable sleep this would sit in
+  // setTimeout for the full 5s interval before it even noticed the abort.
+  const start = performance.now();
+  const pending = kl.refreshAfterUpgrade(60_000, 5_000, controller.signal);
+  // Let the first validate() land and the loop enter its sleep, then abort.
+  await new Promise((r) => setTimeout(r, 50));
+  controller.abort();
+  const result = await pending;
+  const elapsed = performance.now() - start;
+
+  expect(result).toBe(false);
+  expect(calls(), "exactly one poll before the abort, none after").toBe(1);
+  expect(elapsed, "must wake from the sleep on abort, not after the 5s interval").toBeLessThan(1_000);
+});
+
+test("(5c) the last sleep is capped to the remaining time, so a long interval never runs past the timeout", async () => {
+  const store = await seededLicensedStore(60, ["pro"]);
+  const { t, calls } = countingTransport(200, okBodyWithEntitlements(["pro"]));
+  const kl = new Keylight({ tenantId: "t", productId: "p", trustedKeys: TRUSTED_KEYS, transport: t, store });
+  await kl.load();
+
+  // A poll interval much longer than the timeout: a bare sleep(poll) would overrun
+  // the 200ms timeout by a full 5s.
+  const start = performance.now();
+  const result = await kl.refreshAfterUpgrade(200, 5_000);
+  const elapsed = performance.now() - start;
+
+  expect(result).toBe(false);
+  expect(calls()).toBe(1);
+  expect(elapsed, "must return at the timeout, not at the end of the poll interval").toBeLessThan(1_000);
 });
 
 test("(7) a forged (known-kid, tampered) lease thrown mid-poll drives the manager to invalid -> true", async () => {

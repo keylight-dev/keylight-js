@@ -88,7 +88,8 @@ npm install @keylight-dev/js
 import { Keylight, fetchKeyset, FetchTransport } from "@keylight-dev/js";
 
 // Optionally fetch the tenant's trusted Ed25519 keyset so leases verify offline.
-// (You can also pin keys explicitly via `trustedKeys`.)
+// (You can also pin keys explicitly via `trustedKeys` — required if you turn on
+// `requireSignedConfig`; see the Configuration Reference.)
 const ks = await fetchKeyset(new FetchTransport(), "https://api.keylight.dev", "your-tenant");
 
 const kl = new Keylight({
@@ -197,7 +198,10 @@ const kl = new Keylight({
 ```
 
 - The trusted keyset can be fetched once from `GET /{tenant}/.well-known/keylight-keys`
-  (`fetchKeyset`) or pinned at construction time.
+  (`fetchKeyset`) or pinned at construction time. `fetchKeyset` is a convenience for getting
+  started, not a trust root: it comes over the same connection as everything else, so anything
+  you want to hold up against a hostile network should be verified against keys pinned in your
+  build.
 - `cachedLease` returns the lease only when it is `kid`-known, signature-valid, unexpired, and
   (if set) within `maxOfflineDays` of the last online validation.
 - You can verify a lease standalone (e.g. in server middleware) without a client instance:
@@ -293,12 +297,43 @@ Pass `KeylightOptions` to `new Keylight({ … })`:
 | `maxOfflineDays` | `number` | — | Offline grace window since last online validation. Omit = until the lease itself expires. |
 | `trialDurationDays` | `number` | `14` | Local trial length. |
 | `freeTierEnabled` | `boolean` | `false` | Resolve to `FreeTier` when there's no license/trial. |
+| `requireSignedConfig` | `boolean` | `false` | Require the server's trial length / free-tier settings to carry a valid Ed25519 signature before they are cached. See below before enabling. |
 | `appVersion` | `string` | — | Reported in telemetry. |
 | `baseUrl` | `string` | `https://api.keylight.dev` | API base URL. |
 | `keyPrefix` | `string` | — | Client-side key-format check (e.g. `"PROD"`). |
 | `deviceId` | `string` | generated | Override the persisted free-tier/keyless instance id. |
 | `transport` | `Transport` | `FetchTransport` | Injectable HTTP transport. |
 | `store` | `LicenseStore` | auto-detected | Injectable persistence layer. |
+
+### `requireSignedConfig`
+
+The trial length and free-tier flag are settings the server owns; the values you pass in are only
+a seed for an install that has never reached it. With `requireSignedConfig: true`, the SDK checks
+the Ed25519 signature the API attaches to those settings — on `/config`, on `validate`, and on
+the keyless beacon alike — and **never caches a response that does not verify**. An unsigned or
+tampered response leaves the seed in place; it does not fall back to whatever the server claimed.
+
+- **Off by default, and keep it off unless your product is signed.** The API signs a product's
+  settings only once that product has a trial length configured in the dashboard. Every other
+  product is served unsigned, and enabling the flag against one of those would reject legitimate
+  responses and pin the install to its seed.
+- **Pin `trustedKeys` at build time when you enable it.** The quick start above fetches the
+  keyset at runtime with `fetchKeyset(...)` from the same API host. That is fine for verifying
+  leases on a good day, but it is not a trust root: a keyset fetched over the same connection
+  that serves the settings can be forged by the same attacker, so a signature checked against it
+  proves nothing. Ship the keys with your app instead.
+
+```ts
+const kl = new Keylight({
+  tenantId: "your-tenant",
+  productId: "your-product",
+  trustedKeys: { k1: "<raw ed25519 public key, base64>" }, // pinned, not fetched
+  requireSignedConfig: true,
+});
+```
+
+The trade-off of pinning is that rotating to a new key id leaves builds already in the wild on
+their last cached settings until they update — they freeze, they do not break.
 
 > A small set of **Swift-parity aliases** is also available for teams porting between platforms:
 > `isEntitled`, `productFreeTierEnabled()`, `isValidKeyFormat(key)`, `refresh(force?)`,

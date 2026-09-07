@@ -32,6 +32,24 @@ export interface ValidationResult { valid: boolean; lease: Lease | null; license
 interface ValidateResp { valid: boolean; license_expires_at?: number | null; lease?: Lease | null; error?: string | null; trial_duration_days?: number | null; free_tier_enabled?: boolean | null; }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * A `sleep` that an `AbortSignal` can cut short. Resolves as soon as the signal
+ * fires (or immediately if it already has), and detaches its listener either
+ * way so a long-lived signal does not accumulate one per poll. The timer is
+ * `unref`'d where the runtime supports it (Node/Bun) so a pending poll never
+ * keeps a one-shot script alive — same pattern as the keyless heartbeat.
+ */
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0 || signal?.aborted) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const onAbort = () => { clearTimeout(timer); resolve(); };
+    const timer = setTimeout(() => { signal?.removeEventListener("abort", onAbort); resolve(); }, ms);
+    // Node/Bun only; browsers and Workers return a plain handle with no unref.
+    (timer as { unref?: () => void }).unref?.();
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
 const nowSecs = () => Math.floor(Date.now() / 1000);
 
 /** Default keyless heartbeat cadence. Six hours matches the Worker's
@@ -548,6 +566,8 @@ export class Keylight {
   async refreshAfterUpgrade(timeout = 30_000, pollInterval = 2_000, signal?: AbortSignal): Promise<boolean> {
     await this.ensureHydrated();
     if (!this.hasStoredLicense()) return false;
+    // An already-aborted signal means zero network calls, not "one last poll".
+    if (signal?.aborted) return false;
 
     const entKey = () => JSON.stringify([...(this.cachedLease?.entitlements ?? [])].sort());
     const beforeEntitlements = entKey();
@@ -568,8 +588,14 @@ export class Keylight {
       }
       if (entKey() !== beforeEntitlements || JSON.stringify(this.state()) !== beforeState) return true;
       if (signal?.aborted) return false;
+      const remaining = deadline - monotonicNow();
+      if (remaining <= 0) return false;
+      // Never sleep past the deadline: the last wait is capped to what is left, and
+      // an abort mid-sleep wakes it immediately rather than after a full interval.
+      // Neither wake-up starts another poll: no network call begins past `timeout`.
+      await abortableSleep(Math.min(poll, remaining), signal);
+      if (signal?.aborted) return false;
       if (monotonicNow() >= deadline) return false;
-      await sleep(poll);
     }
   }
 
